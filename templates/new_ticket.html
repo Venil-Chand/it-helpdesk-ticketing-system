@@ -1,0 +1,68 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Create IT Support Ticket</title>
+</head>
+<body>
+
+    <h1>Create New Support Ticket</h1>
+
+    <a href="/tickets">Back to Tickets</a>
+
+    <hr>
+
+    {% if error %}
+        <p style="color: red;">{{ error }}</p>
+    {% endif %}
+
+    <form method="POST">
+
+        <label for="title">Ticket Title:</label>
+        <br>
+        <input
+            type="text"
+            id="title"
+            name="title"
+            value="{{ title }}"
+            maxlength="120"
+            required
+        >
+
+        <br><br>
+
+        <label for="description">Description:</label>
+        <br>
+        <textarea
+            id="description"
+            name="description"
+            rows="5"
+            cols="40"
+            maxlength="2000"
+            required
+        >{{ description }}</textarea>
+
+        <br><br>
+
+        <label for="priority">Priority:</label>
+        <br>
+        <select id="priority" name="priority">
+
+            {% for option in ["Low", "Medium", "High", "Critical"] %}
+                <option value="{{ option }}"
+                    {% if priority == option %}selected{% endif %}>
+                    {{ option }}
+                </option>
+            {% endfor %}
+
+        </select>
+
+        <br><br>
+
+        <button type="submit">Submit Ticket</button>
+
+    </form>
+
+</body>
+</html>
