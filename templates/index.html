@@ -1,22 +1,27 @@
 
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <title>IT Helpdesk Dashboard</title>
 </head>
+
 <body>
 
-    <h1>IT Support Tickets</h1>
+    <h1>IT Helpdesk Dashboard</h1>
 
     <a href="/">Back to Home</a>
     <a href="{{ url_for('new_ticket') }}">Create New Ticket</a>
 
     <hr>
 
+    <h2>IT Support Tickets</h2>
+
     {% if tickets %}
 
     <table border="1" cellpadding="10">
+
         <tr>
             <th>ID</th>
             <th>Title</th>
@@ -26,13 +31,63 @@
         </tr>
 
         {% for ticket in tickets %}
+
         <tr>
+
             <td>{{ ticket["id"] }}</td>
+
             <td>{{ ticket["title"] }}</td>
+
             <td>{{ ticket["priority"] }}</td>
-            <td>{{ ticket["status"] }}</td>
-            <td>{{ ticket["assigned_to"] or "Unassigned" }}</td>
+
+            <td>
+                <form method="POST"
+                      action="{{ url_for('change_status', ticket_id=ticket['id']) }}">
+
+                    <select name="status">
+
+                        {% for status in ["Open", "In Progress", "Resolved", "Closed"] %}
+
+                        <option value="{{ status }}"
+                            {% if ticket["status"] == status %}selected{% endif %}>
+                            {{ status }}
+                        </option>
+
+                        {% endfor %}
+
+                    </select>
+
+                    <button type="submit">Update</button>
+
+                </form>
+            </td>
+
+            
+<td>
+    <form method="POST"
+          action="{{ url_for('assign_technician', ticket_id=ticket['id']) }}">
+
+        <select name="technician">
+
+            {% for name in ["Unassigned", "Technician A", "Technician B", "Technician C"] %}
+
+            <option value="{{ name }}"
+                {% if (ticket["assigned_to"] or "Unassigned") == name %}selected{% endif %}>
+                {{ name }}
+            </option>
+
+            {% endfor %}
+
+        </select>
+
+        <button type="submit">Assign</button>
+
+    </form>
+</td>
+
+
         </tr>
+
         {% endfor %}
 
     </table>
@@ -40,7 +95,7 @@
     {% else %}
 
     <p>No tickets have been created yet.</p>
-
+		
     {% endif %}
 
 </body>
