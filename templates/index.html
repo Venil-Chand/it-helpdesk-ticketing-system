@@ -19,7 +19,6 @@
     <h2>IT Support Tickets</h2>
 
     {% if tickets %}
-
     <table border="1" cellpadding="10">
 
         <tr>
@@ -28,18 +27,23 @@
             <th>Priority</th>
             <th>Status</th>
             <th>Assigned To</th>
-        </tr>
-
-        {% for ticket in tickets %}
-
+	
         <tr>
 
+            <!-- Ticket ID -->
             <td>{{ ticket["id"] }}</td>
 
-            <td>{{ ticket["title"] }}</td>
+            <!-- Ticket Title -->
+            <td>
+                <a href="{{ url_for('ticket_detail', ticket_id=ticket['id']) }}">
+                    {{ ticket["title"] }}
+                </a>
+            </td>
 
+            <!-- Ticket Priority -->
             <td>{{ ticket["priority"] }}</td>
 
+            <!-- Ticket Status -->
             <td>
                 <form method="POST"
                       action="{{ url_for('change_status', ticket_id=ticket['id']) }}">
@@ -62,33 +66,31 @@
                 </form>
             </td>
 
-            
-<td>
-    <form method="POST"
-          action="{{ url_for('assign_technician', ticket_id=ticket['id']) }}">
+            <!-- Assigned Technician -->
+            <td>
+                <form method="POST"
+                      action="{{ url_for('assign_technician', ticket_id=ticket['id']) }}">
 
-        <select name="technician">
+                    <select name="technician">
 
-            {% for name in ["Unassigned", "Technician A", "Technician B", "Technician C"] %}
+                        {% for name in ["Unassigned", "Technician A", "Technician B", "Technician C"] %}
 
-            <option value="{{ name }}"
-                {% if (ticket["assigned_to"] or "Unassigned") == name %}selected{% endif %}>
-                {{ name }}
-            </option>
+                        <option value="{{ name }}"
+                            {% if (ticket["assigned_to"] or "Unassigned") == name %}selected{% endif %}>
+                            {{ name }}
+                        </option>
 
-            {% endfor %}
+                        {% endfor %}
 
-        </select>
+                    </select>
 
-        <button type="submit">Assign</button>
+                    <button type="submit">Assign</button>
 
-    </form>
-</td>
-
+                </form>
+            </td>
 
         </tr>
-
-        {% endfor %}
+       {% endfor %}
 
     </table>
 

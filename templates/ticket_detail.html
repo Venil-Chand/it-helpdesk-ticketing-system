@@ -1,0 +1,117 @@
+
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Ticket Details</title>
+</head>
+
+<body>
+
+    <h1>IT Helpdesk - Ticket Details</h1>
+
+    <a href="{{ url_for('tickets') }}">
+        Back to Dashboard
+    </a>
+
+    <hr>
+
+    <h2>Ticket #{{ ticket["id"] }}</h2>
+
+    <h3>{{ ticket["title"] }}</h3>
+
+    <p>
+        <strong>Description:</strong>
+        {{ ticket["description"] }}
+    </p>
+
+    <p>
+        <strong>Priority:</strong>
+        {{ ticket["priority"] }}
+    </p>
+
+    <p>
+        <strong>Status:</strong>
+        {{ ticket["status"] }}
+    </p>
+
+    <p>
+        <strong>Assigned To:</strong>
+        {{ ticket["assigned_to"] or "Unassigned" }}
+    </p>
+
+    <p>
+        <strong>Created:</strong>
+        {{ ticket["created_at"] }}
+    </p>
+
+    <hr>
+
+    <h2>Troubleshooting Notes</h2>
+
+    {% if comments %}
+
+        {% for comment in comments %}
+
+            <div>
+                <p>
+                    <strong>{{ comment["author"] }}</strong>
+                </p>
+
+                <p>{{ comment["note"] }}</p>
+
+                <small>{{ comment["created_at"] }}</small>
+            </div>
+
+            <hr>
+
+        {% endfor %}
+
+    {% else %}
+
+        <p>No troubleshooting notes yet.</p>
+
+    {% endif %}
+
+    <h2>Add New Note</h2>
+
+    {% if error %}
+        <p style="color: red;">{{ error }}</p>
+    {% endif %}
+
+    <form method="POST">
+
+        <label for="author">Technician Name:</label>
+        <br>
+
+        <input
+            type="text"
+            id="author"
+            name="author"
+            maxlength="80"
+            required
+        >
+
+        <br><br>
+
+        <label for="note">Troubleshooting Note:</label>
+        <br>
+
+        <textarea
+            id="note"
+            name="note"
+            rows="5"
+            cols="50"
+            maxlength="2000"
+            required
+        ></textarea>
+
+        <br><br>
+
+        <button type="submit">Save Note</button>
+
+    </form>
+
+</body>
+</html>

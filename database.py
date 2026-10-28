@@ -152,6 +152,102 @@ def assign_ticket(ticket_id, technician):
         connection.close()
 
 
+# Add a troubleshooting comment to a ticket
+def add_comment(ticket_id, author, note):
+
+    # Remove unnecessary spaces
+    author = author.strip()
+    note = note.strip()
+
+    # Validate the information
+    if not author or not note:
+        raise ValueError("Author and note cannot be empty")
+
+    if len(author) > 80 or len(note) > 2000:
+        raise ValueError("Comment is too long")
+
+    # Connect to the database
+    connection = sqlite3.connect(DB_PATH)
+
+    try:
+        # Enforce the relationship between tickets and comments
+        connection.execute("PRAGMA foreign_keys = ON")
+
+        # Save the comment
+        cursor = connection.execute("""
+            INSERT INTO ticket_comments (ticket_id, author, note)
+            VALUES (?, ?, ?)
+        """, (ticket_id, author, note))
+
+        connection.commit()
+
+        # Return the new comment ID
+        return cursor.lastrowid
+
+    finally:
+        connection.close()
+
+# Retrieve troubleshooting comments for a specific ticket
+def get_comments(ticket_id):
+
+    # Connect to the SQLite database
+    connection = sqlite3.connect(DB_PATH)
+
+    try:
+        # Access database columns by name
+        connection.row_factory = sqlite3.Row
+
+        # Retrieve comments belonging to the selected ticket
+        cursor = connection.execute("""
+            SELECT * FROM ticket_comments
+            WHERE ticket_id = ?
+            ORDER BY id ASC
+        """, (ticket_id,))
+
+        # Convert database records into dictionaries
+        comments = [dict(row) for row in cursor.fetchall()]
+
+        return comments
+
+    finally:
+        # Close the database connection
+        connection.close()
+
+
+if __name__ == "__main__":
+    create_database()
+
+# Retrieve a single ticket using its ID
+def get_ticket(ticket_id):
+
+    # Connect to the SQLite database
+    connection = sqlite3.connect(DB_PATH)
+
+    try:
+        # Access columns by their names
+        connection.row_factory = sqlite3.Row
+
+        # Retrieve the selected ticket
+        cursor = connection.execute("""
+            SELECT * FROM tickets
+            WHERE id = ?
+        """, (ticket_id,))
+
+        # Retrieve one record
+        ticket = cursor.fetchone()
+
+        # Return None if the ticket does not exist
+        if ticket is None:
+            return None
+
+        # Convert the record into a dictionary
+        return dict(ticket)
+
+    finally:
+        # Close the database connection
+        connection.close()
+
+
 if __name__ == "__main__":
     create_database()
 

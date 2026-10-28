@@ -3,10 +3,10 @@
 # Main Flask Application
 
 # Import Flask tools
-from flask import Flask, render_template, request, redirect, url_for
+from flask import Flask, render_template, request, redirect, url_for, abort
 
 # Import database functions
-from database import get_tickets, add_ticket, update_ticket_status, assign_ticket
+from database import get_tickets, add_ticket, update_ticket_status, assign_ticket, get_ticket, add_comment, get_comments
 
 # Create the Flask application
 app = Flask(__name__)
@@ -143,3 +143,52 @@ def assign_technician(ticket_id):
 
 
 
+
+# Display the details of a specific ticket
+@app.route("/tickets/<int:ticket_id>", methods=["GET", "POST"])
+def ticket_detail(ticket_id):
+
+    # Retrieve the selected ticket from SQLite
+    ticket = get_ticket(ticket_id)
+
+    # Show a 404 error if the ticket does not exist
+    if ticket is None:
+        abort(404)
+
+    error = None
+
+    # Check whether a technician submitted a comment
+    if request.method == "POST":
+
+        # Retrieve information from the HTML form
+        author = request.form.get("author", "").strip()
+        note = request.form.get("note", "").strip()
+
+        # Validate the submitted information
+        if (
+            not author
+            or not note
+            or len(author) > 80
+            or len(note) > 2000
+        ):
+            error = "Please enter valid comment details."
+
+        else:
+            # Save the comment into SQLite
+            add_comment(ticket_id, author, note)
+
+            # Redirect to prevent duplicate submissions
+            return redirect(
+                url_for("ticket_detail", ticket_id=ticket_id)
+            )
+
+    # Retrieve all comments for this ticket
+    comments = get_comments(ticket_id)
+
+    # Display the ticket details webpage
+    return render_template(
+        "ticket_detail.html",
+        ticket=ticket,
+        comments=comments,
+        error=error
+    )
