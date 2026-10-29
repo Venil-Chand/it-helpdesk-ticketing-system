@@ -1,0 +1,52 @@
+{% extends 'base.html' %}
+{% block title %}Login — IT Helpdesk{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-12 col-sm-8 col-md-5 col-lg-4">
+
+    <div class="card shadow border-0 mt-4">
+      <div class="card-header bg-primary text-white text-center py-3">
+        <i class="bi bi-headset fs-2 d-block"></i>
+        <h5 class="mb-0 mt-1 fw-bold">IT Helpdesk</h5>
+      </div>
+      <div class="card-body p-4">
+
+        <form method="POST" action="{{ url_for('login') }}">
+
+          <div class="mb-3">
+            <label for="username" class="form-label fw-semibold">Username</label>
+            <div class="input-group">
+              <span class="input-group-text"><i class="bi bi-person"></i></span>
+              <input type="text" class="form-control" id="username" name="username"
+                     placeholder="Your username" required autofocus>
+            </div>
+          </div>
+
+          <div class="mb-4">
+            <label for="password" class="form-label fw-semibold">Password</label>
+            <div class="input-group">
+              <span class="input-group-text"><i class="bi bi-lock"></i></span>
+              <input type="password" class="form-control" id="password" name="password"
+                     placeholder="Your password" required>
+            </div>
+          </div>
+
+          <button type="submit" class="btn btn-primary w-100">
+            <i class="bi bi-box-arrow-in-right me-1"></i>Sign In
+          </button>
+
+        </form>
+
+      </div>
+      <div class="card-footer text-muted text-center small">
+        Demo accounts &mdash;
+        <strong>admin</strong>/admin123 &nbsp;|&nbsp;
+        <strong>venil</strong>/venil123 &nbsp;|&nbsp;
+        <strong>staff1</strong>/staff123
+      </div>
+    </div>
+
+  </div>
+</div>
+{% endblock %}

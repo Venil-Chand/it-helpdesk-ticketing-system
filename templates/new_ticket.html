@@ -1,68 +1,78 @@
+{% extends 'base.html' %}
+{% block title %}New Ticket — IT Helpdesk{% endblock %}
 
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>Create IT Support Ticket</title>
-</head>
-<body>
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-12 col-md-8 col-lg-6">
 
-    <h1>Create New Support Ticket</h1>
+    <div class="d-flex align-items-center mb-3">
+      <a href="{{ url_for('index') }}" class="btn btn-outline-secondary btn-sm me-3">
+        <i class="bi bi-arrow-left"></i>
+      </a>
+      <h4 class="mb-0 fw-bold"><i class="bi bi-plus-circle me-2 text-primary"></i>Raise a New Ticket</h4>
+    </div>
 
-    <a href="/tickets">Back to Tickets</a>
+    <div class="card shadow-sm border-0">
+      <div class="card-body p-4">
+        <form method="POST" action="{{ url_for('new_ticket') }}">
 
-    <hr>
+          <!-- Title -->
+          <div class="mb-3">
+            <label for="title" class="form-label fw-semibold">
+              Issue Title <span class="text-danger">*</span>
+            </label>
+            <input type="text" class="form-control" id="title" name="title"
+                   placeholder="e.g. Printer in Room 3 is not responding"
+                   maxlength="120" required>
+            <div class="form-text">Keep it short and specific — one sentence.</div>
+          </div>
 
-    {% if error %}
-        <p style="color: red;">{{ error }}</p>
-    {% endif %}
+          <!-- Description -->
+          <div class="mb-3">
+            <label for="description" class="form-label fw-semibold">
+              Full Description <span class="text-danger">*</span>
+            </label>
+            <textarea class="form-control" id="description" name="description"
+                      rows="5"
+                      placeholder="Describe the problem in detail:&#10;- What happened?&#10;- What did you try?&#10;- When did it start?"
+                      required></textarea>
+          </div>
 
-    <form method="POST">
+          <!-- Priority -->
+          <div class="mb-4">
+            <label class="form-label fw-semibold">Priority</label>
+            <div class="d-flex gap-3 flex-wrap">
+              {% for p in priorities %}
+                {% set colours = {'Low':'secondary','Medium':'info','High':'warning','Critical':'danger'} %}
+                <div class="form-check">
+                  <input class="form-check-input" type="radio" name="priority"
+                         id="p_{{ p }}" value="{{ p }}"
+                         {% if p == 'Medium' %}checked{% endif %}>
+                  <label class="form-check-label" for="p_{{ p }}">
+                    <span class="badge bg-{{ colours[p] }} fs-6">{{ p }}</span>
+                  </label>
+                </div>
+              {% endfor %}
+            </div>
+            <div class="form-text mt-1">
+              <strong>Critical</strong> = total outage &nbsp;|&nbsp;
+              <strong>High</strong> = major impact &nbsp;|&nbsp;
+              <strong>Medium</strong> = inconvenient &nbsp;|&nbsp;
+              <strong>Low</strong> = minor / can wait
+            </div>
+          </div>
 
-        <label for="title">Ticket Title:</label>
-        <br>
-        <input
-            type="text"
-            id="title"
-            name="title"
-            value="{{ title }}"
-            maxlength="120"
-            required
-        >
+          <div class="d-flex gap-2">
+            <button type="submit" class="btn btn-primary px-4">
+              <i class="bi bi-send-fill me-1"></i>Submit Ticket
+            </button>
+            <a href="{{ url_for('index') }}" class="btn btn-outline-secondary">Cancel</a>
+          </div>
 
-        <br><br>
+        </form>
+      </div>
+    </div>
 
-        <label for="description">Description:</label>
-        <br>
-        <textarea
-            id="description"
-            name="description"
-            rows="5"
-            cols="40"
-            maxlength="2000"
-            required
-        >{{ description }}</textarea>
-
-        <br><br>
-
-        <label for="priority">Priority:</label>
-        <br>
-        <select id="priority" name="priority">
-
-            {% for option in ["Low", "Medium", "High", "Critical"] %}
-                <option value="{{ option }}"
-                    {% if priority == option %}selected{% endif %}>
-                    {{ option }}
-                </option>
-            {% endfor %}
-
-        </select>
-
-        <br><br>
-
-        <button type="submit">Submit Ticket</button>
-
-    </form>
-
-</body>
-</html>
+  </div>
+</div>
+{% endblock %}

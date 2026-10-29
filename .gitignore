@@ -1,5 +1,30 @@
-.venv/
+# Python
 __pycache__/
 *.pyc
-helpdesk.db
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Database files — never commit these
+*.db
+*.db-backup
+*.db-shm
+*.db-wal
+
+# Environment variables — keep secrets out of Git
 .env
+
+# Editor and OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/

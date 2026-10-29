@@ -1,0 +1,74 @@
+/* ── Global ── */
+body {
+  background-color: #f0f4f8;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+}
+
+main.container-fluid {
+  max-width: 1200px;
+}
+
+/* ── Stat cards ── */
+.stat-card {
+  border-radius: 12px;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.stat-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 20px rgba(0,0,0,0.10) !important;
+}
+.stat-icon {
+  font-size: 2rem;
+  line-height: 1;
+  margin-bottom: 6px;
+}
+.stat-num {
+  font-size: 2.2rem;
+  font-weight: 700;
+  line-height: 1;
+}
+.stat-label {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #6c757d;
+  margin-top: 4px;
+}
+
+/* ── Ticket table rows — clickable ── */
+.ticket-row {
+  cursor: pointer;
+  transition: background-color 0.1s;
+}
+.ticket-row:hover td {
+  background-color: #e8f0fe;
+}
+
+/* ── Comment entries ── */
+.comment-entry {
+  transition: background-color 0.1s;
+}
+.comment-entry:hover {
+  background-color: #f8f9fa;
+}
+
+/* ── Cards ── */
+.card {
+  border-radius: 10px;
+}
+.card-header {
+  border-radius: 10px 10px 0 0 !important;
+  font-size: 0.92rem;
+}
+
+/* ── Navbar active indicator ── */
+.navbar .nav-link.active {
+  font-weight: 600;
+  border-bottom: 2px solid rgba(255,255,255,0.8);
+}
+
+/* ── Responsive stat sizes ── */
+@media (max-width: 576px) {
+  .stat-num { font-size: 1.6rem; }
+  .stat-icon { font-size: 1.5rem; }
+}
