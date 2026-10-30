@@ -1,7 +1,7 @@
 # IT Helpdesk Ticketing System
 
 A Python and Flask web application for managing IT support requests.
-Built as a portfolio project by Venil Chand (computing student, Unitec Auckland).
+Built as a portfolio project by Venil Chand (computing student, Auckland).
 
 ---
 
