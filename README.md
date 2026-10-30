@@ -83,15 +83,29 @@ Open your browser at **http://127.0.0.1:5000**
 
 ---
 
-## Default Login Accounts
 
-| Username | Password | Role |
-|---|---|---|
-| `admin` | `admin123` | Admin — full access |
-| `venil` | `venil123` | Technician |
-| `staff1` | `staff123` | Regular user |
+## User Accounts and Roles
 
-> **Note:** Change these passwords before using the application in any shared environment.
+The application supports three user roles:
+
+| Role | Permissions |
+|---|---|
+| Administrator | Manage support tickets and technician assignments |
+| Technician | Update ticket status, manage assignments and add notes |
+| Regular User | Create tickets, view tickets and add comments |
+
+### Authentication
+
+- Passwords are stored using Werkzeug password hashing.
+- Flask sessions are used to manage authenticated users.
+- The current prototype includes demonstration accounts for local testing.
+- Demonstration credentials must be replaced before deployment.
+- Account management and password-changing features are planned.
+
+**Security Notice:** This application is intended for local
+development and educational purposes. It must not be exposed
+to the public internet until security improvements are completed.
+
 
 ---
 
@@ -145,7 +159,8 @@ or deployed publicly:
 | Issue | Risk | Status |
 |---|---|---|
 | **No CSRF protection** | A malicious page could submit forms on behalf of a logged-in user | Not yet implemented |
-| **Weak default passwords** | `admin123`, `venil123`, `staff123` are trivially guessable | Change before sharing |
+| **Demonstration accounts** | Predictable credentials may allow unauthorized access if deployed | Replace fixed passwords with secure account setup |
+| **Authorization scope** | Logged-in users may access tickets beyond those they own | Review ticket ownership and role permissions |
 | **No rate limiting on login** | An attacker could try thousands of passwords | Not yet implemented |
 | **No HTTPS** | Passwords and session cookies travel in plaintext on a network | Use only on localhost |
 | **Debug mode enabled** | Flask debug mode leaks internal errors and enables a code-execution pin | Must be disabled before deployment |
@@ -182,14 +197,3 @@ will refuse to start rather than fall back to an insecure default.
 - [ ] Deploy to a Linux server with Gunicorn + Nginx
 
 ---
-
-## Acknowledgement
-
-> **AI-assisted project — work in progress — not production-ready**
-
-This project was built as a hands-on learning exercise by Venil Chand.
-Development was assisted by [Claude](https://claude.ai) (Anthropic AI) acting as a coding tutor.
-
-All code has been reviewed and tested by the author.
-The purpose of this repository is to demonstrate continuous, genuine development progress
-as part of a computing portfolio at Unitec Auckland.
