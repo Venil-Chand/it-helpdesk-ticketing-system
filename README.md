@@ -1,7 +1,11 @@
+
 # IT Helpdesk Ticketing System
 
 A Python and Flask web application for managing IT support requests.
-Built as a portfolio project by Venil Chand (computing student, Auckland).
+
+Built as a portfolio and practical learning project by Venil Chand, a computing student based in Auckland, New Zealand.
+
+The project demonstrates Python programming, web development, relational databases, authentication, role-based permissions, software testing, and Git version control.
 
 ---
 
@@ -9,31 +13,44 @@ Built as a portfolio project by Venil Chand (computing student, Auckland).
 
 | Layer | Technology |
 |---|---|
-| Language | Python 3 |
+| Programming language | Python 3 |
 | Web framework | Flask 3.1 |
-| Database | SQLite (via Python's built-in `sqlite3`) |
-| Password security | Werkzeug `generate_password_hash` / `check_password_hash` |
-| Templates | Jinja2 (Flask's built-in templating engine) |
-| Frontend | Bootstrap 5.3 (CSS framework) + Bootstrap Icons 1.11 |
-| Environment | Ubuntu (WSL2 on Windows 11) |
+| Database | SQLite (`sqlite3`) |
+| Password security | Werkzeug password hashing |
+| Templates | Jinja2 |
+| Frontend | Bootstrap 5.3 and Bootstrap Icons |
+| Testing | Python `unittest` |
+| Development environment | Ubuntu WSL2 on Windows |
+| Version control | Git and GitHub |
 
 ---
 
 ## Features
 
-- **User authentication** — login and logout with secure password hashing
-- **Role-based access** — three roles with different permissions:
-  - `admin` — full access to all features
-  - `technician` — can update ticket status and assignment
-  - `user` — can raise tickets and add notes
-- **Ticket creation** — raise a ticket with a title, description and priority level
-- **Dashboard** — view all tickets with summary statistics (total / open / in-progress / critical)
+- **User authentication** — login and logout using Flask sessions
+- **Password hashing** — passwords are stored as hashes, not plaintext
+- **Role-based permissions** — administrator, technician and regular user
+- **Ticket creation** — create support requests with title, description and priority
+- **Dashboard** — view ticket statistics and support requests
 - **Ticket filtering** — filter tickets by status and priority
-- **Ticket detail** — full description, comment history and update panel
-- **Status updates** — technicians and admins can update ticket status
-- **Technician assignment** — assign tickets to specific team members
-- **Notes and comments** — any logged-in user can add notes to a ticket
-- **Clickable rows** — click any row in the dashboard to open that ticket
+- **Ticket details** — view descriptions, updates and comments
+- **Ticket management** — update status and technician assignment
+- **Comments** — add notes to existing tickets
+- **Account setup** — create the first administrator using a terminal script
+- **Password changes** — verify the current password before changing it
+- **Automated tests** — test access to login and protected pages
+
+---
+
+## User Roles
+
+| Role | Permissions |
+|---|---|
+| Administrator | Manage support tickets and assignments |
+| Technician | Update ticket status, manage assignments and add comments |
+| Regular User | Create tickets, view permitted pages and add comments |
+
+The existing application uses three roles. Further authorization improvements are planned, particularly around ticket ownership and access restrictions.
 
 ---
 
@@ -46,7 +63,7 @@ git clone https://github.com/Venil-Chand/it-helpdesk-ticketing-system.git
 cd it-helpdesk-ticketing-system
 ```
 
-### 2. Create and activate a virtual environment
+### 2. Create a virtual environment
 
 ```bash
 python3 -m venv .venv
@@ -59,141 +76,294 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 4. Set up the environment file
+### 4. Configure environment variables
+
+Create your local environment file:
 
 ```bash
 cp .env.example .env
 ```
 
-Open `.env` and replace the placeholder with a real secret key:
+Generate a secret key:
 
 ```bash
 python3 -c "import secrets; print(secrets.token_hex(32))"
 ```
 
-Paste the output as the value of `SECRET_KEY` in `.env`.
+Open `.env` and set `SECRET_KEY` to the generated value.
 
-### 5. Run the application
+Never upload `.env` or your actual secret key to GitHub.
+
+### 5. Set up the administrator account
+
+For a new installation, run:
+
+```bash
+python setup_accounts.py
+```
+
+If no accounts exist, the program creates the initial `admin` account after prompting for a password.
+
+Passwords must contain at least 16 characters.
+
+No fixed default password is created during database initialization.
+
+### 6. Start the application
 
 ```bash
 python app.py
 ```
 
-Open your browser at **http://127.0.0.1:5000**
+Open your browser at:
+
+http://127.0.0.1:5000
+
+The application is intended for local development and learning.
 
 ---
 
+## Secure Account Management
 
-## User Accounts and Roles
+Account setup and password changes are handled by:
 
-The application supports three user roles:
+`setup_accounts.py`
 
-| Role | Permissions |
-|---|---|
-| Administrator | Manage support tickets and technician assignments |
-| Technician | Update ticket status, manage assignments and add notes |
-| Regular User | Create tickets, view tickets and add comments |
+### First-time administrator setup
 
-### Authentication
+Run:
 
-- Passwords are stored using Werkzeug password hashing.
-- Flask sessions are used to manage authenticated users.
-- The current prototype includes demonstration accounts for local testing.
-- Demonstration credentials must be replaced before deployment.
-- Account management and password-changing features are planned.
+```bash
+python setup_accounts.py
+```
 
-**Security Notice:** This application is intended for local
-development and educational purposes. It must not be exposed
-to the public internet until security improvements are completed.
+When the user database is empty, the script creates the initial administrator account after requesting and confirming a password.
 
+### Changing an existing password
+
+Run the same command:
+
+```bash
+python setup_accounts.py
+```
+
+The program requests:
+
+1. An existing username
+2. The current password
+3. A new password
+4. Confirmation of the new password
+
+The script checks the current password before updating the stored password hash.
+
+### Password security
+
+- Passwords are entered using Python's `getpass` module.
+- New passwords must contain at least 16 characters.
+- Werkzeug hashes passwords before they are stored in SQLite.
+- The new password cannot match the existing password.
+- SQL queries use parameter placeholders to reduce SQL injection risk.
+- Password-changing functionality is available through the local command line, not through the web interface.
+
+**Important:** Existing demonstration accounts from earlier project versions may still have their original passwords until they are changed. Removing the hardcoded passwords from source code does not automatically invalidate passwords stored in an existing database.
+
+This local script is not a replacement for production-grade account administration.
 
 ---
 
 ## Project Structure
 
-```
+```text
 it-helpdesk-ticketing-system/
-├── app.py              Flask application and routes
-├── database.py         SQLite database helpers
-├── migrate.py          One-time migration script (old schema → new schema)
-├── requirements.txt    Python dependencies
-├── .env.example        Template for environment variables
-├── .gitignore          Files excluded from Git
+├── app.py
+├── database.py
+├── setup_accounts.py
+├── migrate.py
+├── requirements.txt
+├── .env.example
+├── .gitignore
+├── README.md
+├── tests/
+│   └── test_authentication.py
 ├── templates/
-│   ├── base.html       Shared page layout (navbar, flash messages, footer)
-│   ├── login.html      Login page
-│   ├── index.html      Dashboard with stats cards and ticket table
-│   ├── new_ticket.html Raise a new ticket
-│   └── ticket_detail.html  View, update and comment on a ticket
+│   ├── base.html
+│   ├── login.html
+│   ├── index.html
+│   ├── new_ticket.html
+│   └── ticket_detail.html
 └── static/
-    └── style.css       Custom styles
+    └── style.css
 ```
+
+### Important Python files
+
+| File | Purpose |
+|---|---|
+| `app.py` | Flask application, routes and login logic |
+| `database.py` | SQLite tables, queries and ticket functions |
+| `setup_accounts.py` | Initial administrator setup and password changes |
+| `migrate.py` | Migration from an earlier database structure |
+| `tests/test_authentication.py` | Automated authentication access tests |
+
+The local `helpdesk.db` database and `.env` file are excluded from version control.
 
 ---
 
-## How the Application Works (Beginner Explanation)
+## How the Application Works
 
-**Flask** is the web server. When you visit a URL like `/tickets/3`, Flask calls the matching Python function (called a *route*) and returns an HTML page.
+### Flask
 
-**SQLite** stores all the data in a single file (`helpdesk.db`). It has three tables:
-- `users` — usernames, hashed passwords and roles
-- `tickets` — every support request
-- `comments` — notes added to each ticket
+Flask handles HTTP requests and connects URLs to Python functions.
 
-**Jinja2** fills in the HTML templates. Variables like `{{ ticket['title'] }}` are replaced with real values before the page is sent to the browser.
+For example, visiting `/tickets/3` calls the route responsible for displaying ticket number 3.
 
-**Sessions** remember who is logged in. When you log in successfully, Flask stores your username in a signed cookie. When you log out, the cookie is cleared.
+### SQLite
 
-**Password hashing** — passwords are never stored as plain text. Werkzeug converts them into a one-way hash. When you log in, it checks that the entered password matches the stored hash.
+SQLite stores application information in a local database file, `helpdesk.db`.
+
+The database contains three main tables:
+
+- `users` — usernames, password hashes and roles
+- `tickets` — support requests and their status
+- `comments` — notes associated with tickets
+
+### Jinja2
+
+Jinja2 connects Python application data with HTML templates, allowing dynamic information to appear on webpages.
+
+### Sessions
+
+Flask uses signed session cookies to identify authenticated users between requests.
+
+### Password Hashing
+
+Werkzeug converts passwords into one-way hashes. When a user logs in, the submitted password is checked against the stored hash.
+
+### Account Management
+
+The `setup_accounts.py` script uses `getpass`, password verification and SQL updates to manage local account passwords without writing new passwords directly into source code.
+
+---
+
+## Automated Testing
+
+The project includes automated authentication tests using Python's built-in `unittest` framework.
+
+To run the tests:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+The initial four tests check:
+
+| Test | Purpose |
+|---|---|
+| Login page | Confirm `/login` is accessible |
+| Dashboard protection | Check that anonymous visitors are redirected |
+| New ticket protection | Check that anonymous visitors cannot access the creation page |
+| Ticket detail protection | Check that anonymous visitors are redirected |
+
+These four tests have passed in local development.
+
+The current tests do not provide complete security coverage. Further testing is planned for password changes, authorization rules, invalid logins and database operations.
 
 ---
 
 ## Security Limitations
 
-> **This application is for local learning and portfolio purposes only.**
-> It is not hardened for public deployment.
+**This project is intended for local development and educational use. It is not production-ready.**
 
-The following known security issues exist and must be addressed before the application is shared
-or deployed publicly:
+| Security area | Current status |
+|---|---|
+| Password hashing | Implemented |
+| Hardcoded account creation | Removed from database initialization |
+| Initial administrator setup | Implemented as a local script |
+| Password changing | Implemented as a local script |
+| CSRF protection | Not implemented |
+| Login rate limiting | Not implemented |
+| Ticket ownership authorization | Requires further review |
+| HTTPS | Not configured |
+| Debug mode | Must be disabled before deployment |
+| Web-based account administration | Not implemented |
+| Automated security testing | Basic access tests implemented |
 
-| Issue | Risk | Status |
-|---|---|---|
-| **No CSRF protection** | A malicious page could submit forms on behalf of a logged-in user | Not yet implemented |
-| **Demonstration accounts** | Predictable credentials may allow unauthorized access if deployed | Replace fixed passwords with secure account setup |
-| **Authorization scope** | Logged-in users may access tickets beyond those they own | Review ticket ownership and role permissions |
-| **No rate limiting on login** | An attacker could try thousands of passwords | Not yet implemented |
-| **No HTTPS** | Passwords and session cookies travel in plaintext on a network | Use only on localhost |
-| **Debug mode enabled** | Flask debug mode leaks internal errors and enables a code-execution pin | Must be disabled before deployment |
-| **No input length validation in templates** | Very long titles or descriptions will display but may cause layout issues | Minor |
-| **No account management** | No way to change a password or create new users through the UI | Planned |
+Existing databases may still contain old demonstration credentials. Those passwords must be changed before relying on the updated authentication process.
 
-The `SECRET_KEY` is now **required** — if the `.env` file is missing or empty, the application
-will refuse to start rather than fall back to an insecure default.
+Security improvements are ongoing.
 
 ---
 
 ## Current Limitations
 
-- No email notifications when tickets are updated
-- No file attachments on tickets
-- No pagination on the dashboard
-- No account self-service (change password, create users)
-- Not tested with multiple simultaneous users
+- No email notifications
+- No file attachments
+- No dashboard pagination
+- No web-based password change form
+- No administrative user management interface
+- Limited automated test coverage
+- No load or concurrency testing
+- Not configured for production deployment
 
 ---
 
 ## Future Development Roadmap
 
-- [ ] CSRF tokens on all forms (use Flask-WTF)
-- [ ] HTTPS support (use a reverse proxy such as Nginx)
-- [ ] Rate limiting on the login route (use Flask-Limiter)
-- [ ] Disable debug mode for any non-local environment
-- [ ] Change-password feature
-- [ ] User management page (admin only)
-- [ ] Email notifications (Flask-Mail)
-- [ ] File attachments on tickets
-- [ ] Pagination on the dashboard
-- [ ] Export tickets to CSV
-- [ ] Deploy to a Linux server with Gunicorn + Nginx
+### Security
+
+- [x] Password hashing
+- [x] Remove hardcoded account initialization
+- [x] Local administrator account setup
+- [x] Command-line password changes
+- [x] Basic authentication access tests
+- [ ] Add CSRF protection
+- [ ] Implement login rate limiting
+- [ ] Improve ticket ownership authorization
+- [ ] Add a secure web-based change-password feature
+- [ ] Add administrator-controlled user creation
+- [ ] Expand authentication and authorization tests
+- [ ] Disable debug mode for deployment
+- [ ] Configure HTTPS for production
+
+### Application Features
+
+- [ ] Email notifications
+- [ ] File attachments
+- [ ] Dashboard pagination
+- [ ] Ticket export to CSV
+- [ ] Advanced search
+- [ ] Ticket activity history
+- [ ] Additional dashboard reports
+
+### Deployment
+
+- [ ] Prepare production configuration
+- [ ] Configure Gunicorn
+- [ ] Configure Nginx and HTTPS
+- [ ] Perform security review
+- [ ] Deploy to a suitable Linux hosting environment
 
 ---
+
+## Development and Learning
+
+This project is being developed incrementally to strengthen practical knowledge of:
+
+- Python programming
+- Flask web applications
+- SQLite databases
+- Authentication and authorization
+- Secure coding principles
+- Automated testing
+- Linux development
+- Git and GitHub workflows
+
+Development has included AI-assisted guidance and code review, with local testing and incremental improvements.
+
+---
+
+
+## Project Status
+
+**Active development — local educational prototype**
+
+The application is being improved progressively, with an emphasis on learning software engineering, writing maintainable Python code and developing secure application features.
