@@ -160,18 +160,17 @@ def login():
 # LOGOUT
 # ---------------------------------------------------
 
-@app.route("/logout")
+
+@app.route("/logout", methods=["POST"])
 def logout():
-    """Log out the current user."""
+    """Log out the current user securely."""
 
     session.clear()
 
-    flash(
-        "You have been logged out.",
-        "info"
-    )
+    flash("You have been logged out.", "info")
 
     return redirect(url_for("login"))
+
 
 
 # ---------------------------------------------------
