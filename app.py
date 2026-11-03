@@ -7,10 +7,10 @@ Run locally:
     python setup_accounts.py
     python app.py
 
-Open in browser:
+Open:
     http://127.0.0.1:5000
 
-User accounts are managed using setup_accounts.py.
+Accounts are managed using setup_accounts.py.
 """
 
 import os
@@ -26,6 +26,8 @@ from flask import (
 )
 
 from flask_wtf.csrf import CSRFProtect
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from werkzeug.security import check_password_hash
 from dotenv import load_dotenv
 
@@ -39,25 +41,34 @@ import database as db
 # Load environment variables from .env
 load_dotenv()
 
-# Create Flask application
+# Create the Flask application
 app = Flask(__name__)
 
-# Read secret key
+# Obtain the secret key
 _secret = os.environ.get("SECRET_KEY")
 
-# Ensure the secret key exists
 if not _secret:
     raise RuntimeError(
         "SECRET_KEY is not set. "
-        "Copy .env.example to .env and add a real key: "
-        "python3 -c \"import secrets; print(secrets.token_hex(32))\""
+        "Copy .env.example to .env and configure a secret key."
     )
 
-# Configure Flask secret key
+# Configure Flask session security
 app.secret_key = _secret
+
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
 # Enable CSRF protection
 csrf = CSRFProtect(app)
+
+# Enable login rate limiting
+# In-memory storage is for local development only
+limiter = Limiter(
+    key_func=get_remote_address,
+    app=app,
+    storage_uri="memory://"
+)
 
 
 # ---------------------------------------------------
@@ -84,12 +95,12 @@ STATUSES = [
 # ---------------------------------------------------
 
 def logged_in():
-    """Check whether the user is logged in."""
+    """Check whether a user is logged in."""
     return "username" in session
 
 
 def require_login():
-    """Redirect unauthenticated users to the login page."""
+    """Redirect unauthenticated visitors to login."""
 
     if not logged_in():
         flash("Please log in first.", "warning")
@@ -99,7 +110,7 @@ def require_login():
 
 
 def is_tech_or_admin():
-    """Check whether the user has technician or admin access."""
+    """Check whether the user can manage tickets."""
 
     return session.get("role") in (
         "technician",
@@ -112,9 +123,11 @@ def is_tech_or_admin():
 # ---------------------------------------------------
 
 @app.route("/login", methods=["GET", "POST"])
+@limiter.limit("5 per minute", methods=["POST"])
 def login():
-    """Authenticate a user."""
+    """Authenticate users with rate limiting."""
 
+    # Already authenticated
     if logged_in():
         return redirect(url_for("index"))
 
@@ -128,14 +141,16 @@ def login():
             "password", ""
         )
 
-        # Find the user in the database
+        # Retrieve user from database
         user = db.get_user(username)
 
-        # Verify the password hash
+        # Check password against stored hash
         if user and check_password_hash(
-            user["password_hash"], password
+            user["password_hash"],
+            password
         ):
 
+            # Clear any previous session information
             session.clear()
 
             session["username"] = user["username"]
@@ -157,20 +172,21 @@ def login():
 
 
 # ---------------------------------------------------
-# LOGOUT
+# SECURE LOGOUT
 # ---------------------------------------------------
-
 
 @app.route("/logout", methods=["POST"])
 def logout():
-    """Log out the current user securely."""
+    """End a user session using a CSRF-protected POST."""
 
     session.clear()
 
-    flash("You have been logged out.", "info")
+    flash(
+        "You have been logged out.",
+        "info"
+    )
 
     return redirect(url_for("login"))
-
 
 
 # ---------------------------------------------------
@@ -179,14 +195,13 @@ def logout():
 
 @app.route("/")
 def index():
-    """Display the helpdesk dashboard."""
+    """Display support tickets and dashboard statistics."""
 
     redir = require_login()
 
     if redir:
         return redir
 
-    # Read selected filters
     status_filter = request.args.get(
         "status", "All"
     )
@@ -195,7 +210,6 @@ def index():
         "priority", "All"
     )
 
-    # Retrieve tickets and statistics
     tickets = db.get_all_tickets(
         status_filter,
         priority_filter
@@ -215,12 +229,12 @@ def index():
 
 
 # ---------------------------------------------------
-# CREATE NEW TICKET
+# CREATE TICKET
 # ---------------------------------------------------
 
 @app.route("/tickets/new", methods=["GET", "POST"])
 def new_ticket():
-    """Create a new IT support ticket."""
+    """Create a new IT support request."""
 
     redir = require_login()
 
@@ -258,7 +272,6 @@ def new_ticket():
 
         else:
 
-            # Save the ticket
             ticket_id = db.create_ticket(
                 title,
                 description,
@@ -290,7 +303,7 @@ def new_ticket():
 
 @app.route("/tickets/<int:ticket_id>")
 def ticket_detail(ticket_id):
-    """Display a ticket and its comments."""
+    """Show ticket details, comments and assignments."""
 
     redir = require_login()
 
@@ -308,9 +321,7 @@ def ticket_detail(ticket_id):
 
         return redirect(url_for("index"))
 
-    # Retrieve comments and usernames
     comments = db.get_comments(ticket_id)
-
     all_users = db.get_all_usernames()
 
     return render_template(
@@ -338,7 +349,7 @@ def update_ticket(ticket_id):
     if redir:
         return redir
 
-    # Check user permissions
+    # Restrict updates to technicians and administrators
     if not is_tech_or_admin():
 
         flash(
@@ -353,14 +364,13 @@ def update_ticket(ticket_id):
             )
         )
 
-    # Retrieve submitted values
     status = request.form.get("status")
 
     assigned_to = request.form.get(
         "assigned_to", ""
     ).strip() or None
 
-    # Validate ticket status
+    # Validate submitted status
     if status not in STATUSES:
 
         flash(
@@ -370,7 +380,6 @@ def update_ticket(ticket_id):
 
     else:
 
-        # Update database
         db.update_ticket(
             ticket_id,
             status,
@@ -399,7 +408,7 @@ def update_ticket(ticket_id):
     methods=["POST"]
 )
 def add_comment(ticket_id):
-    """Add a comment to a support ticket."""
+    """Add a note or comment to a helpdesk ticket."""
 
     redir = require_login()
 
@@ -410,7 +419,6 @@ def add_comment(ticket_id):
         "content", ""
     ).strip()
 
-    # Validate comment content
     if not content:
 
         flash(
@@ -420,7 +428,6 @@ def add_comment(ticket_id):
 
     else:
 
-        # Save the comment
         db.add_comment(
             ticket_id,
             session["username"],
@@ -446,7 +453,7 @@ def add_comment(ticket_id):
 
 if __name__ == "__main__":
 
-    # Create missing database tables
+    # Ensure database tables exist
     db.init_db()
 
     print(
@@ -454,5 +461,6 @@ if __name__ == "__main__":
         "http://127.0.0.1:5000\n"
     )
 
-    # Debug mode disabled by default
+    # Local development only
+    # Debug mode remains disabled
     app.run(debug=False)
