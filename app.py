@@ -7,10 +7,10 @@ Run locally:
     python setup_accounts.py
     python app.py
 
-Open:
+Open in browser:
     http://127.0.0.1:5000
 
-Accounts are managed using setup_accounts.py.
+User accounts are managed using setup_accounts.py.
 """
 
 import os
@@ -22,7 +22,8 @@ from flask import (
     redirect,
     url_for,
     session,
-    flash
+    flash,
+    abort
 )
 
 from flask_wtf.csrf import CSRFProtect
@@ -41,19 +42,20 @@ import database as db
 # Load environment variables from .env
 load_dotenv()
 
-# Create the Flask application
+# Create Flask application
 app = Flask(__name__)
 
-# Obtain the secret key
+# Read secret key
 _secret = os.environ.get("SECRET_KEY")
 
+# Require a valid secret key configuration
 if not _secret:
     raise RuntimeError(
         "SECRET_KEY is not set. "
         "Copy .env.example to .env and configure a secret key."
     )
 
-# Configure Flask session security
+# Configure Flask sessions
 app.secret_key = _secret
 
 app.config["SESSION_COOKIE_HTTPONLY"] = True
@@ -62,8 +64,8 @@ app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 # Enable CSRF protection
 csrf = CSRFProtect(app)
 
-# Enable login rate limiting
-# In-memory storage is for local development only
+# Enable rate limiting
+# In-memory storage is for local development
 limiter = Limiter(
     key_func=get_remote_address,
     app=app,
@@ -91,11 +93,12 @@ STATUSES = [
 
 
 # ---------------------------------------------------
-# AUTHENTICATION HELPERS
+# AUTHENTICATION AND AUTHORIZATION HELPERS
 # ---------------------------------------------------
 
 def logged_in():
-    """Check whether a user is logged in."""
+    """Check whether the user is logged in."""
+
     return "username" in session
 
 
@@ -103,19 +106,39 @@ def require_login():
     """Redirect unauthenticated visitors to login."""
 
     if not logged_in():
-        flash("Please log in first.", "warning")
+
+        flash(
+            "Please log in first.",
+            "warning"
+        )
+
         return redirect(url_for("login"))
 
     return None
 
 
 def is_tech_or_admin():
-    """Check whether the user can manage tickets."""
+    """Check whether the user has a support staff role."""
 
     return session.get("role") in (
         "technician",
         "admin"
     )
+
+
+def can_view_ticket(ticket):
+    """Check whether the current user may access a ticket."""
+
+    # A nonexistent ticket cannot be viewed
+    if ticket is None:
+        return False
+
+    # Administrators and technicians can view all tickets
+    if is_tech_or_admin():
+        return True
+
+    # Regular users can view only their own tickets
+    return ticket["created_by"] == session.get("username")
 
 
 # ---------------------------------------------------
@@ -125,9 +148,9 @@ def is_tech_or_admin():
 @app.route("/login", methods=["GET", "POST"])
 @limiter.limit("5 per minute", methods=["POST"])
 def login():
-    """Authenticate users with rate limiting."""
+    """Authenticate users with login rate limiting."""
 
-    # Already authenticated
+    # Redirect users who are already logged in
     if logged_in():
         return redirect(url_for("index"))
 
@@ -141,18 +164,19 @@ def login():
             "password", ""
         )
 
-        # Retrieve user from database
+        # Find the user in the database
         user = db.get_user(username)
 
-        # Check password against stored hash
+        # Verify the password hash
         if user and check_password_hash(
             user["password_hash"],
             password
         ):
 
-            # Clear any previous session information
+            # Clear previous session data
             session.clear()
 
+            # Store authenticated user information
             session["username"] = user["username"]
             session["role"] = user["role"]
 
@@ -177,7 +201,7 @@ def login():
 
 @app.route("/logout", methods=["POST"])
 def logout():
-    """End a user session using a CSRF-protected POST."""
+    """End the current session using a CSRF-protected POST."""
 
     session.clear()
 
@@ -195,13 +219,15 @@ def logout():
 
 @app.route("/")
 def index():
-    """Display support tickets and dashboard statistics."""
+    """Display tickets and statistics based on user permissions."""
 
+    # Check login
     redir = require_login()
 
     if redir:
         return redir
 
+    # Read filter options
     status_filter = request.args.get(
         "status", "All"
     )
@@ -210,13 +236,59 @@ def index():
         "priority", "All"
     )
 
+    # Retrieve tickets using the selected filters
     tickets = db.get_all_tickets(
         status_filter,
         priority_filter
     )
 
-    stats = db.get_stats()
+    # Administrators and technicians see all tickets
+    if is_tech_or_admin():
 
+        stats = db.get_stats()
+
+    else:
+
+        # Regular users see only their own tickets
+        username = session["username"]
+
+        tickets = [
+            ticket
+            for ticket in tickets
+            if ticket["created_by"] == username
+        ]
+
+        # Retrieve all tickets to calculate
+        # statistics for the current user only
+        all_tickets = db.get_all_tickets()
+
+        own_tickets = [
+            ticket
+            for ticket in all_tickets
+            if ticket["created_by"] == username
+        ]
+
+        # Calculate user-specific dashboard statistics
+        stats = {
+            "total": len(own_tickets),
+
+            "open": sum(
+                1 for ticket in own_tickets
+                if ticket["status"] == "Open"
+            ),
+
+            "in_progress": sum(
+                1 for ticket in own_tickets
+                if ticket["status"] == "In Progress"
+            ),
+
+            "critical": sum(
+                1 for ticket in own_tickets
+                if ticket["priority"] == "Critical"
+            )
+        }
+
+    # Display dashboard
     return render_template(
         "index.html",
         tickets=tickets,
@@ -229,12 +301,12 @@ def index():
 
 
 # ---------------------------------------------------
-# CREATE TICKET
+# CREATE NEW TICKET
 # ---------------------------------------------------
 
 @app.route("/tickets/new", methods=["GET", "POST"])
 def new_ticket():
-    """Create a new IT support request."""
+    """Create a new IT support ticket."""
 
     redir = require_login()
 
@@ -272,6 +344,7 @@ def new_ticket():
 
         else:
 
+            # Create a ticket with the current username
             ticket_id = db.create_ticket(
                 title,
                 description,
@@ -303,27 +376,40 @@ def new_ticket():
 
 @app.route("/tickets/<int:ticket_id>")
 def ticket_detail(ticket_id):
-    """Show ticket details, comments and assignments."""
+    """Display a ticket only if the user is authorised."""
 
+    # Step 1: Check login
     redir = require_login()
 
     if redir:
         return redir
 
+    # Step 2: Retrieve the ticket
     ticket = db.get_ticket(ticket_id)
 
-    if not ticket:
+    # Step 3: Check whether the ticket exists
+    if ticket is None:
 
-        flash(
-            f"Ticket #{ticket_id} not found.",
-            "danger"
-        )
+        abort(404)
 
-        return redirect(url_for("index"))
+    # Step 4: Check ticket ownership or staff access
+    if not can_view_ticket(ticket):
 
+        abort(404)
+
+    # Step 5: Retrieve comments
     comments = db.get_comments(ticket_id)
-    all_users = db.get_all_usernames()
 
+    # Only support staff need the assignment list
+    if is_tech_or_admin():
+
+        all_users = db.get_all_usernames()
+
+    else:
+
+        all_users = []
+
+    # Step 6: Display ticket details
     return render_template(
         "ticket_detail.html",
         ticket=ticket,
@@ -344,12 +430,13 @@ def ticket_detail(ticket_id):
 def update_ticket(ticket_id):
     """Update ticket status and technician assignment."""
 
+    # Check login
     redir = require_login()
 
     if redir:
         return redir
 
-    # Restrict updates to technicians and administrators
+    # Only administrators and technicians may update tickets
     if not is_tech_or_admin():
 
         flash(
@@ -364,13 +451,14 @@ def update_ticket(ticket_id):
             )
         )
 
+    # Read submitted data
     status = request.form.get("status")
 
     assigned_to = request.form.get(
         "assigned_to", ""
     ).strip() or None
 
-    # Validate submitted status
+    # Validate ticket status
     if status not in STATUSES:
 
         flash(
@@ -380,6 +468,7 @@ def update_ticket(ticket_id):
 
     else:
 
+        # Update ticket information
         db.update_ticket(
             ticket_id,
             status,
@@ -408,13 +497,28 @@ def update_ticket(ticket_id):
     methods=["POST"]
 )
 def add_comment(ticket_id):
-    """Add a note or comment to a helpdesk ticket."""
+    """Add a comment only to an authorised ticket."""
 
+    # Step 1: Check login
     redir = require_login()
 
     if redir:
         return redir
 
+    # Step 2: Retrieve the ticket
+    ticket = db.get_ticket(ticket_id)
+
+    # Step 3: Check that ticket exists
+    if ticket is None:
+
+        abort(404)
+
+    # Step 4: Verify access permissions
+    if not can_view_ticket(ticket):
+
+        abort(404)
+
+    # Step 5: Read submitted comment
     content = request.form.get(
         "content", ""
     ).strip()
@@ -428,6 +532,7 @@ def add_comment(ticket_id):
 
     else:
 
+        # Save the comment
         db.add_comment(
             ticket_id,
             session["username"],
@@ -453,7 +558,7 @@ def add_comment(ticket_id):
 
 if __name__ == "__main__":
 
-    # Ensure database tables exist
+    # Create database tables if needed
     db.init_db()
 
     print(
@@ -461,6 +566,5 @@ if __name__ == "__main__":
         "http://127.0.0.1:5000\n"
     )
 
-    # Local development only
-    # Debug mode remains disabled
+    # Disable debug mode
     app.run(debug=False)
