@@ -153,18 +153,38 @@ class TestTicketOwnership(unittest.TestCase):
             )
 
     def test_dashboard_shows_only_own_tickets(self):
-        # Alice should see her ticket but not Bob's
+        """
+        A regular user must see only their own tickets.
+
+        The dashboard now calls get_tickets_by_user() for regular users,
+        not get_all_tickets(). This test verifies:
+          1. get_tickets_by_user is called with the correct username and filters.
+          2. get_all_tickets is never called for a regular user.
+          3. get_stats is called with username= so statistics are user-specific.
+          4. Only Alice's ticket appears in the template context.
+        """
         self.login_as("alice", "user")
 
-        all_tickets = [
-            self.alice_ticket,
-            self.bob_ticket
-        ]
+        # Only Alice's ticket is returned — Bob's is excluded at database level
+        alice_only = [self.alice_ticket]
+
+        # Fake statistics so the real database is never touched
+        mock_stats = {
+            "total": 1,
+            "open": 1,
+            "in_progress": 0,
+            "critical": 0
+        }
 
         with patch(
-            "app.db.get_all_tickets",
-            return_value=all_tickets
-        ), patch(
+            "app.db.get_tickets_by_user",
+            return_value=alice_only
+        ) as mock_get_by_user, patch(
+            "app.db.get_all_tickets"
+        ) as mock_get_all, patch(
+            "app.db.get_stats",
+            return_value=mock_stats
+        ) as mock_stats_fn, patch(
             "app.render_template",
             return_value="Dashboard"
         ) as mock_template:
@@ -173,13 +193,27 @@ class TestTicketOwnership(unittest.TestCase):
 
             self.assertEqual(response.status_code, 200)
 
-            # Inspect the data sent to the dashboard
+            # Verify the correct filtering function was called with Alice's
+            # username and the default "All" filters from the query string
+            mock_get_by_user.assert_called_once_with(
+                "alice", "All", "All"
+            )
+
+            # Regular users must never trigger the all-tickets query
+            mock_get_all.assert_not_called()
+
+            # Statistics must be scoped to Alice, not the whole system
+            mock_stats_fn.assert_called_once_with(username="alice")
+
+            # Inspect the ticket list passed to the template
             displayed_tickets = (
                 mock_template.call_args.kwargs["tickets"]
             )
 
+            # Alice should see exactly one ticket
             self.assertEqual(len(displayed_tickets), 1)
 
+            # That ticket must belong to Alice
             self.assertEqual(
                 displayed_tickets[0]["created_by"],
                 "alice"
