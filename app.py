@@ -217,17 +217,32 @@ def logout():
 # DASHBOARD
 # ---------------------------------------------------
 
+
+# ---------------------------------------------------
+# DASHBOARD
+# ---------------------------------------------------
+
+
+# ---------------------------------------------------
+# DASHBOARD WITH TICKET SEARCH
+# ---------------------------------------------------
+
 @app.route("/")
 def index():
-    """Display tickets and statistics based on user permissions."""
+    """Display and search tickets based on user permissions."""
 
-    # Check login
+    # Check whether the user is logged in
     redir = require_login()
 
     if redir:
         return redir
 
-    # Read filter options
+    # Read search text from the URL
+    search_query = request.args.get(
+        "q", ""
+    ).strip()
+
+    # Read existing dashboard filters
     status_filter = request.args.get(
         "status", "All"
     )
@@ -236,59 +251,52 @@ def index():
         "priority", "All"
     )
 
-    # Retrieve tickets using the selected filters
-    tickets = db.get_all_tickets(
-        status_filter,
-        priority_filter
-    )
-
-    # Administrators and technicians see all tickets
+    # Check whether the user is support staff
     if is_tech_or_admin():
 
+        if search_query:
+            # Search all tickets for authorised staff
+            tickets = db.search_tickets(
+                search_text=search_query,
+                status_filter=status_filter,
+                priority_filter=priority_filter
+            )
+
+        else:
+            # Keep existing dashboard behaviour
+            tickets = db.get_all_tickets(
+                status_filter,
+                priority_filter
+            )
+
+        # Statistics across all tickets
         stats = db.get_stats()
 
     else:
-
-        # Regular users see only their own tickets
+        # Identify the logged-in regular user
         username = session["username"]
 
-        tickets = [
-            ticket
-            for ticket in tickets
-            if ticket["created_by"] == username
-        ]
-
-        # Retrieve all tickets to calculate
-        # statistics for the current user only
-        all_tickets = db.get_all_tickets()
-
-        own_tickets = [
-            ticket
-            for ticket in all_tickets
-            if ticket["created_by"] == username
-        ]
-
-        # Calculate user-specific dashboard statistics
-        stats = {
-            "total": len(own_tickets),
-
-            "open": sum(
-                1 for ticket in own_tickets
-                if ticket["status"] == "Open"
-            ),
-
-            "in_progress": sum(
-                1 for ticket in own_tickets
-                if ticket["status"] == "In Progress"
-            ),
-
-            "critical": sum(
-                1 for ticket in own_tickets
-                if ticket["priority"] == "Critical"
+        if search_query:
+            # Restrict searches to tickets owned by this user
+            tickets = db.search_tickets(
+                search_text=search_query,
+                username=username,
+                status_filter=status_filter,
+                priority_filter=priority_filter
             )
-        }
 
-    # Display dashboard
+        else:
+            # Keep existing user-specific ticket retrieval
+            tickets = db.get_tickets_by_user(
+                username,
+                status_filter,
+                priority_filter
+            )
+
+        # Statistics for the current user only
+        stats = db.get_stats(username=username)
+
+    # Display dashboard with search results
     return render_template(
         "index.html",
         tickets=tickets,
@@ -296,8 +304,11 @@ def index():
         status_filter=status_filter,
         priority_filter=priority_filter,
         statuses=["All"] + STATUSES,
-        priorities=["All"] + PRIORITIES
+        priorities=["All"] + PRIORITIES,
+        search_query=search_query
     )
+
+
 
 
 # ---------------------------------------------------

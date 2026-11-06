@@ -1,134 +1,381 @@
+
 {% extends 'base.html' %}
+
 {% block title %}Dashboard — IT Helpdesk{% endblock %}
 
 {% block content %}
 
-<!-- ── Stats cards ── -->
+<!-- ------------------------------------------------ -->
+<!-- DASHBOARD STATISTICS -->
+<!-- ------------------------------------------------ -->
+
 <div class="row g-3 mb-4">
 
-  <div class="col-6 col-md-3">
-    <div class="card stat-card border-0 shadow-sm text-center h-100">
-      <div class="card-body">
-        <div class="stat-icon text-primary"><i class="bi bi-ticket-perforated-fill"></i></div>
-        <div class="stat-num">{{ stats.total }}</div>
-        <div class="stat-label">Total Tickets</div>
-      </div>
-    </div>
-  </div>
+    <!-- Total Tickets -->
+    <div class="col-6 col-md-3">
+        <div class="card stat-card border-0 shadow-sm text-center h-100">
+            <div class="card-body">
+                <div class="stat-icon text-primary">
+                    <i class="bi bi-ticket-perforated-fill"></i>
+                </div>
 
-  <div class="col-6 col-md-3">
-    <div class="card stat-card border-0 shadow-sm text-center h-100">
-      <div class="card-body">
-        <div class="stat-icon text-success"><i class="bi bi-envelope-open-fill"></i></div>
-        <div class="stat-num text-success">{{ stats.open }}</div>
-        <div class="stat-label">Open</div>
-      </div>
-    </div>
-  </div>
+                <div class="stat-num">
+                    {{ stats.total }}
+                </div>
 
-  <div class="col-6 col-md-3">
-    <div class="card stat-card border-0 shadow-sm text-center h-100">
-      <div class="card-body">
-        <div class="stat-icon text-warning"><i class="bi bi-arrow-repeat"></i></div>
-        <div class="stat-num text-warning">{{ stats.in_progress }}</div>
-        <div class="stat-label">In Progress</div>
-      </div>
+                <div class="stat-label">
+                    Total Tickets
+                </div>
+            </div>
+        </div>
     </div>
-  </div>
 
-  <div class="col-6 col-md-3">
-    <div class="card stat-card border-0 shadow-sm text-center h-100">
-      <div class="card-body">
-        <div class="stat-icon text-danger"><i class="bi bi-exclamation-triangle-fill"></i></div>
-        <div class="stat-num text-danger">{{ stats.critical }}</div>
-        <div class="stat-label">Critical</div>
-      </div>
+    <!-- Open Tickets -->
+    <div class="col-6 col-md-3">
+        <div class="card stat-card border-0 shadow-sm text-center h-100">
+            <div class="card-body">
+                <div class="stat-icon text-success">
+                    <i class="bi bi-envelope-open-fill"></i>
+                </div>
+
+                <div class="stat-num text-success">
+                    {{ stats.open }}
+                </div>
+
+                <div class="stat-label">
+                    Open
+                </div>
+            </div>
+        </div>
     </div>
-  </div>
+
+    <!-- In Progress Tickets -->
+    <div class="col-6 col-md-3">
+        <div class="card stat-card border-0 shadow-sm text-center h-100">
+            <div class="card-body">
+                <div class="stat-icon text-warning">
+                    <i class="bi bi-arrow-repeat"></i>
+                </div>
+
+                <div class="stat-num text-warning">
+                    {{ stats.in_progress }}
+                </div>
+
+                <div class="stat-label">
+                    In Progress
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Critical Tickets -->
+    <div class="col-6 col-md-3">
+        <div class="card stat-card border-0 shadow-sm text-center h-100">
+            <div class="card-body">
+                <div class="stat-icon text-danger">
+                    <i class="bi bi-exclamation-triangle-fill"></i>
+                </div>
+
+                <div class="stat-num text-danger">
+                    {{ stats.critical }}
+                </div>
+
+                <div class="stat-label">
+                    Critical
+                </div>
+            </div>
+        </div>
+    </div>
 
 </div>
 
-<!-- ── Filters + New button ── -->
-<div class="d-flex flex-wrap align-items-center gap-2 mb-3">
-  <h5 class="mb-0 me-2 fw-bold"><i class="bi bi-list-ul me-1"></i>All Tickets</h5>
 
-  <form method="GET" action="{{ url_for('index') }}" class="d-flex gap-2 flex-wrap">
-    <select name="status" class="form-select form-select-sm" style="width:auto"
-            onchange="this.form.submit()">
-      {% for s in statuses %}
-        <option value="{{ s }}" {% if s == status_filter %}selected{% endif %}>{{ s }}</option>
-      {% endfor %}
-    </select>
+<!-- ------------------------------------------------ -->
+<!-- TICKET SEARCH, FILTERS AND NEW TICKET BUTTON -->
+<!-- ------------------------------------------------ -->
 
-    <select name="priority" class="form-select form-select-sm" style="width:auto"
-            onchange="this.form.submit()">
-      {% for p in priorities %}
-        <option value="{{ p }}" {% if p == priority_filter %}selected{% endif %}>{{ p }}</option>
-      {% endfor %}
-    </select>
+<div class="d-flex flex-wrap align-items-center gap-3 mb-3">
 
-    {% if status_filter != 'All' or priority_filter != 'All' %}
-      <a href="{{ url_for('index') }}" class="btn btn-outline-secondary btn-sm">
-        <i class="bi bi-x-circle me-1"></i>Clear
-      </a>
-    {% endif %}
-  </form>
+    <!-- Section Heading -->
+    <h5 class="mb-0 me-2 fw-bold">
+        <i class="bi bi-list-ul me-1"></i>
+        All Tickets
+    </h5>
 
-  <div class="ms-auto">
-    <a href="{{ url_for('new_ticket') }}" class="btn btn-primary btn-sm">
-      <i class="bi bi-plus-lg me-1"></i>New Ticket
-    </a>
-  </div>
+    <!-- Search and Filter Form -->
+    <form
+        method="GET"
+        action="{{ url_for('index') }}"
+        class="d-flex gap-2 flex-wrap align-items-center flex-grow-1"
+        role="search"
+    >
+
+        <!-- Search Field -->
+        <div class="input-group input-group-sm"
+             style="width:250px; max-width:100%;">
+
+            <span class="input-group-text">
+                <i class="bi bi-search"></i>
+            </span>
+
+            <label for="ticket-search" class="visually-hidden">
+                Search tickets
+            </label>
+
+            <input
+                type="search"
+                id="ticket-search"
+                name="q"
+                class="form-control"
+                placeholder="Search tickets..."
+                value="{{ search_query|default('') }}"
+                maxlength="100"
+            >
+
+        </div>
+
+        <!-- Status Filter -->
+        <label for="status-filter" class="visually-hidden">
+            Filter by status
+        </label>
+
+        <select
+            id="status-filter"
+            name="status"
+            class="form-select form-select-sm"
+            style="width:auto;"
+            onchange="this.form.submit()"
+        >
+
+            {% for s in statuses %}
+
+                <option
+                    value="{{ s }}"
+                    {% if s == status_filter %}
+                        selected
+                    {% endif %}
+                >
+                    {{ s }}
+                </option>
+
+            {% endfor %}
+
+        </select>
+
+        <!-- Priority Filter -->
+        <label for="priority-filter" class="visually-hidden">
+            Filter by priority
+        </label>
+
+        <select
+            id="priority-filter"
+            name="priority"
+            class="form-select form-select-sm"
+            style="width:auto;"
+            onchange="this.form.submit()"
+        >
+
+            {% for p in priorities %}
+
+                <option
+                    value="{{ p }}"
+                    {% if p == priority_filter %}
+                        selected
+                    {% endif %}
+                >
+                    {{ p }}
+                </option>
+
+            {% endfor %}
+
+        </select>
+
+        <!-- Search Button -->
+        <button
+            type="submit"
+            class="btn btn-primary btn-sm"
+        >
+            <i class="bi bi-search me-1"></i>
+            Search
+        </button>
+
+        <!-- Clear Search and Filters -->
+        {% if search_query|default('')
+              or status_filter != 'All'
+              or priority_filter != 'All' %}
+
+            <a
+                href="{{ url_for('index') }}"
+                class="btn btn-outline-secondary btn-sm"
+            >
+                <i class="bi bi-x-circle me-1"></i>
+                Clear
+            </a>
+
+        {% endif %}
+
+    </form>
+
+    <!-- New Ticket Button -->
+    <div class="ms-auto">
+
+        <a
+            href="{{ url_for('new_ticket') }}"
+            class="btn btn-primary btn-sm"
+        >
+            <i class="bi bi-plus-lg me-1"></i>
+            New Ticket
+        </a>
+
+    </div>
+
 </div>
 
-<!-- ── Ticket table ── -->
+
+<!-- ------------------------------------------------ -->
+<!-- TICKET TABLE -->
+<!-- ------------------------------------------------ -->
+
 {% if tickets %}
-<div class="table-responsive">
-  <table class="table table-hover align-middle shadow-sm rounded overflow-hidden">
-    <thead class="table-dark">
-      <tr>
-        <th style="width:60px">#</th>
-        <th>Title</th>
-        <th>Priority</th>
-        <th>Status</th>
-        <th>Assigned To</th>
-        <th>Raised By</th>
-        <th>Created</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for t in tickets %}
-      <tr class="ticket-row" onclick="window.location='{{ url_for('ticket_detail', ticket_id=t['id']) }}'">
-        <td><span class="text-muted">#{{ t['id'] }}</span></td>
-        <td class="fw-semibold">{{ t['title'] }}</td>
 
-        <td>
-          {% set pc = {'Low':'secondary','Medium':'info','High':'warning','Critical':'danger'} %}
-          <span class="badge bg-{{ pc[t['priority']] }}">{{ t['priority'] }}</span>
-        </td>
+    <div class="table-responsive">
 
-        <td>
-          {% set sc = {'Open':'success','In Progress':'warning','Resolved':'primary','Closed':'secondary'} %}
-          <span class="badge bg-{{ sc[t['status']] }}">{{ t['status'] }}</span>
-        </td>
+        <table class="table table-hover align-middle shadow-sm rounded overflow-hidden">
 
-        <td>{{ t['assigned_to'] or '—' }}</td>
-        <td>{{ t['created_by'] or '—' }}</td>
-        <td class="text-muted small">{{ t['created_at'][:16] }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</div>
+            <!-- Table Headings -->
+            <thead class="table-dark">
+                <tr>
+                    <th style="width:60px;">#</th>
+                    <th>Title</th>
+                    <th>Priority</th>
+                    <th>Status</th>
+                    <th>Assigned To</th>
+                    <th>Raised By</th>
+                    <th>Created</th>
+                </tr>
+            </thead>
 
-<p class="text-muted small">{{ tickets|length }} ticket(s) shown</p>
+            <!-- Table Records -->
+            <tbody>
+
+                {% for t in tickets %}
+
+                    <tr class="ticket-row">
+
+                        <!-- Ticket ID -->
+                        <td>
+                            <span class="text-muted">
+                                #{{ t['id'] }}
+                            </span>
+                        </td>
+
+                        <!-- Ticket Title -->
+                        <td>
+                            <a
+                                href="{{ url_for('ticket_detail', ticket_id=t['id']) }}"
+                                class="fw-semibold text-decoration-none"
+                            >
+                                {{ t['title'] }}
+                            </a>
+                        </td>
+
+                        <!-- Ticket Priority -->
+                        <td>
+
+                            {% set pc = {
+                                'Low': 'secondary',
+                                'Medium': 'info',
+                                'High': 'warning',
+                                'Critical': 'danger'
+                            } %}
+
+                            <span class="badge bg-{{ pc[t['priority']] }}">
+                                {{ t['priority'] }}
+                            </span>
+
+                        </td>
+
+                        <!-- Ticket Status -->
+                        <td>
+
+                            {% set sc = {
+                                'Open': 'success',
+                                'In Progress': 'warning',
+                                'Resolved': 'primary',
+                                'Closed': 'secondary'
+                            } %}
+
+                            <span class="badge bg-{{ sc[t['status']] }}">
+                                {{ t['status'] }}
+                            </span>
+
+                        </td>
+
+                        <!-- Assigned Technician -->
+                        <td>
+                            {{ t['assigned_to'] or '—' }}
+                        </td>
+
+                        <!-- Ticket Creator -->
+                        <td>
+                            {{ t['created_by'] or '—' }}
+                        </td>
+
+                        <!-- Creation Date -->
+                        <td class="text-muted small">
+                            {{ t['created_at'][:16] }}
+                        </td>
+
+                    </tr>
+
+                {% endfor %}
+
+            </tbody>
+
+        </table>
+
+    </div>
+
+    <!-- Number of Displayed Tickets -->
+    <p class="text-muted small">
+        {{ tickets|length }} ticket(s) shown
+    </p>
 
 {% else %}
-<div class="text-center py-5 text-muted">
-  <i class="bi bi-inbox fs-1 d-block mb-2"></i>
-  No tickets found.
-  <a href="{{ url_for('new_ticket') }}">Create the first one.</a>
-</div>
+
+    <!-- No Results Message -->
+    <div class="text-center py-5 text-muted">
+
+        <i class="bi bi-inbox fs-1 d-block mb-2"></i>
+
+        {% if search_query|default('') %}
+
+            <p class="mb-2">
+                No tickets found matching
+                <strong>{{ search_query }}</strong>.
+            </p>
+
+            <a
+                href="{{ url_for('index') }}"
+                class="btn btn-outline-primary btn-sm"
+            >
+                Clear Search
+            </a>
+
+        {% else %}
+
+            <p class="mb-2">
+                No tickets found.
+            </p>
+
+            <a href="{{ url_for('new_ticket') }}">
+                Create the first one.
+            </a>
+
+        {% endif %}
+
+    </div>
+
 {% endif %}
 
 {% endblock %}

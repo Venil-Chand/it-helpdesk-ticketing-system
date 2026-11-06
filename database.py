@@ -70,10 +70,21 @@ def init_db():
         )
     ''')
 
-    # Save changes to the database
+    # ---------------------------------------------------
+    # DATABASE INDEXES
+    # ---------------------------------------------------
+
+    # Improve ticket retrieval for individual users
+    # and support ordering by creation time
+    c.execute('''
+        CREATE INDEX IF NOT EXISTS idx_tickets_owner_date
+        ON tickets (created_by, created_at DESC, id DESC)
+    ''')
+
+    # Save database changes
     conn.commit()
 
-    # Close the connection
+    # Close database connection
     conn.close()
 
 
@@ -82,7 +93,7 @@ def init_db():
 # ---------------------------------------------------
 
 def get_all_tickets(status_filter=None, priority_filter=None):
-    """Retrieve tickets with optional status and priority filters."""
+    """Retrieve all tickets with optional filters."""
 
     conn = get_db()
 
@@ -100,77 +111,224 @@ def get_all_tickets(status_filter=None, priority_filter=None):
         conditions.append("priority = ?")
         params.append(priority_filter)
 
-    # Add filtering conditions to the SQL query
+    # Add conditions to the SQL query
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
 
-    # Display the newest tickets first
-    query += " ORDER BY created_at DESC"
+    # Display newest tickets first
+    query += " ORDER BY created_at DESC, id DESC"
 
-    tickets = conn.execute(query, params).fetchall()
+    try:
+        tickets = conn.execute(
+            query,
+            params
+        ).fetchall()
 
-    conn.close()
+        return tickets
 
-    return tickets
+    finally:
+        conn.close()
 
+
+# ---------------------------------------------------
+# RETRIEVE TICKETS BY USER
+# ---------------------------------------------------
+
+def get_tickets_by_user(
+    username,
+    status_filter=None,
+    priority_filter=None
+):
+    """Retrieve only tickets created by a specific user."""
+
+    conn = get_db()
+
+    # Restrict results to the specified username
+    query = "SELECT * FROM tickets WHERE created_by = ?"
+
+    params = [username]
+
+    # Apply optional status filter
+    if status_filter and status_filter != "All":
+        query += " AND status = ?"
+        params.append(status_filter)
+
+    # Apply optional priority filter
+    if priority_filter and priority_filter != "All":
+        query += " AND priority = ?"
+        params.append(priority_filter)
+
+    # Display newest tickets first
+    query += " ORDER BY created_at DESC, id DESC"
+
+    try:
+        tickets = conn.execute(
+            query,
+            params
+        ).fetchall()
+
+        return tickets
+
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------
+# SEARCH TICKETS
+# ---------------------------------------------------
+
+def search_tickets(
+    search_text="",
+    username=None,
+    status_filter="All",
+    priority_filter="All"
+):
+    """
+    Search tickets by title or description.
+
+    If username is provided, retrieve only that user's
+    tickets. Otherwise, search all tickets.
+
+    Optional status and priority filters are supported.
+    """
+
+    conn = get_db()
+
+    # Start with the tickets table
+    query = "SELECT * FROM tickets"
+
+    conditions = []
+    params = []
+
+    # Restrict results to a particular user
+    if username is not None:
+        conditions.append("created_by = ?")
+        params.append(username)
+
+    # Remove unnecessary spaces from the search text
+    search_text = search_text.strip()
+
+    # Search in both title and description
+    if search_text:
+
+        conditions.append(
+            "(title LIKE ? OR description LIKE ?)"
+        )
+
+        # % matches any number of characters
+        search_pattern = f"%{search_text}%"
+
+        params.extend([
+            search_pattern,
+            search_pattern
+        ])
+
+    # Apply optional status filter
+    if status_filter and status_filter != "All":
+        conditions.append("status = ?")
+        params.append(status_filter)
+
+    # Apply optional priority filter
+    if priority_filter and priority_filter != "All":
+        conditions.append("priority = ?")
+        params.append(priority_filter)
+
+    # Add all filtering conditions to the SQL query
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
+
+    # Display newest matching tickets first
+    query += " ORDER BY created_at DESC, id DESC"
+
+    try:
+        tickets = conn.execute(
+            query,
+            params
+        ).fetchall()
+
+        return tickets
+
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------
+# GET A SINGLE TICKET
+# ---------------------------------------------------
 
 def get_ticket(ticket_id):
     """Retrieve a single ticket using its ID."""
 
     conn = get_db()
 
-    ticket = conn.execute(
-        "SELECT * FROM tickets WHERE id = ?",
-        (ticket_id,)
-    ).fetchone()
+    try:
+        ticket = conn.execute(
+            "SELECT * FROM tickets WHERE id = ?",
+            (ticket_id,)
+        ).fetchone()
 
-    conn.close()
+        return ticket
 
-    return ticket
+    finally:
+        conn.close()
 
+
+# ---------------------------------------------------
+# CREATE TICKET
+# ---------------------------------------------------
 
 def create_ticket(title, description, priority, created_by):
     """Create a new helpdesk ticket."""
 
     conn = get_db()
 
-    cursor = conn.execute(
-        '''
-        INSERT INTO tickets
-        (title, description, priority, created_by)
-        VALUES (?, ?, ?, ?)
-        ''',
-        (title, description, priority, created_by)
-    )
+    try:
+        cursor = conn.execute(
+            '''
+            INSERT INTO tickets
+            (title, description, priority, created_by)
+            VALUES (?, ?, ?, ?)
+            ''',
+            (title, description, priority, created_by)
+        )
 
-    # Get the ID of the newly created ticket
-    ticket_id = cursor.lastrowid
+        # Get the ID of the newly created ticket
+        ticket_id = cursor.lastrowid
 
-    # Save the new ticket
-    conn.commit()
-    conn.close()
+        # Save the new ticket
+        conn.commit()
 
-    return ticket_id
+        return ticket_id
 
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------
+# UPDATE TICKET
+# ---------------------------------------------------
 
 def update_ticket(ticket_id, status, assigned_to):
-    """Update the status and assigned technician of a ticket."""
+    """Update ticket status and technician assignment."""
 
     conn = get_db()
 
-    conn.execute(
-        '''
-        UPDATE tickets
-        SET status = ?,
-            assigned_to = ?,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-        ''',
-        (status, assigned_to, ticket_id)
-    )
+    try:
+        conn.execute(
+            '''
+            UPDATE tickets
+            SET status = ?,
+                assigned_to = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            ''',
+            (status, assigned_to, ticket_id)
+        )
 
-    conn.commit()
-    conn.close()
+        conn.commit()
+
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------
@@ -182,78 +340,127 @@ def get_comments(ticket_id):
 
     conn = get_db()
 
-    comments = conn.execute(
-        '''
-        SELECT * FROM comments
-        WHERE ticket_id = ?
-        ORDER BY created_at ASC
-        ''',
-        (ticket_id,)
-    ).fetchall()
+    try:
+        comments = conn.execute(
+            '''
+            SELECT * FROM comments
+            WHERE ticket_id = ?
+            ORDER BY created_at ASC
+            ''',
+            (ticket_id,)
+        ).fetchall()
 
-    conn.close()
+        return comments
 
-    return comments
+    finally:
+        conn.close()
 
 
 def add_comment(ticket_id, author, content):
-    """Add a comment to a ticket."""
+    """Add a comment to a helpdesk ticket."""
 
     conn = get_db()
 
-    # Insert the new comment
-    conn.execute(
-        '''
-        INSERT INTO comments (ticket_id, author, content)
-        VALUES (?, ?, ?)
-        ''',
-        (ticket_id, author, content)
-    )
+    try:
+        # Insert a new comment
+        conn.execute(
+            '''
+            INSERT INTO comments (ticket_id, author, content)
+            VALUES (?, ?, ?)
+            ''',
+            (ticket_id, author, content)
+        )
 
-    # Update the ticket's modification time
-    conn.execute(
-        '''
-        UPDATE tickets
-        SET updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-        ''',
-        (ticket_id,)
-    )
+        # Update the ticket's modification time
+        conn.execute(
+            '''
+            UPDATE tickets
+            SET updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            ''',
+            (ticket_id,)
+        )
 
-    conn.commit()
-    conn.close()
+        # Save the changes
+        conn.commit()
+
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------
 # DASHBOARD STATISTICS
 # ---------------------------------------------------
 
-def get_stats():
-    """Calculate ticket statistics for the dashboard."""
+def get_stats(username=None):
+    """
+    Calculate dashboard statistics.
+
+    If username is None:
+        Calculate statistics for all tickets.
+
+    If username is provided:
+        Calculate statistics for that user's tickets.
+    """
 
     conn = get_db()
 
-    stats = {
-        "total": conn.execute(
-            "SELECT COUNT(*) FROM tickets"
-        ).fetchone()[0],
+    # Calculate ticket totals using a single SQL query
+    query = """
+        SELECT
+            COUNT(*) AS total,
 
-        "open": conn.execute(
-            "SELECT COUNT(*) FROM tickets WHERE status = 'Open'"
-        ).fetchone()[0],
+            COALESCE(
+                SUM(
+                    CASE WHEN status = 'Open'
+                    THEN 1 ELSE 0 END
+                ),
+                0
+            ) AS open,
 
-        "in_progress": conn.execute(
-            "SELECT COUNT(*) FROM tickets WHERE status = 'In Progress'"
-        ).fetchone()[0],
+            COALESCE(
+                SUM(
+                    CASE WHEN status = 'In Progress'
+                    THEN 1 ELSE 0 END
+                ),
+                0
+            ) AS in_progress,
 
-        "critical": conn.execute(
-            "SELECT COUNT(*) FROM tickets WHERE priority = 'Critical'"
-        ).fetchone()[0]
-    }
+            COALESCE(
+                SUM(
+                    CASE WHEN priority = 'Critical'
+                    THEN 1 ELSE 0 END
+                ),
+                0
+            ) AS critical
 
-    conn.close()
+        FROM tickets
+    """
 
-    return stats
+    params = []
+
+    # Restrict statistics to a particular user
+    if username is not None:
+        query += " WHERE created_by = ?"
+        params.append(username)
+
+    try:
+        row = conn.execute(
+            query,
+            params
+        ).fetchone()
+
+        stats = {
+            "total": row["total"],
+            "open": row["open"],
+            "in_progress": row["in_progress"],
+            "critical": row["critical"]
+        }
+
+        return stats
+
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------
@@ -265,14 +472,16 @@ def get_user(username):
 
     conn = get_db()
 
-    user = conn.execute(
-        "SELECT * FROM users WHERE username = ?",
-        (username,)
-    ).fetchone()
+    try:
+        user = conn.execute(
+            "SELECT * FROM users WHERE username = ?",
+            (username,)
+        ).fetchone()
 
-    conn.close()
+        return user
 
-    return user
+    finally:
+        conn.close()
 
 
 def get_all_usernames():
@@ -280,10 +489,12 @@ def get_all_usernames():
 
     conn = get_db()
 
-    rows = conn.execute(
-        "SELECT username FROM users"
-    ).fetchall()
+    try:
+        rows = conn.execute(
+            "SELECT username FROM users"
+        ).fetchall()
 
-    conn.close()
+        return [row["username"] for row in rows]
 
-    return [row["username"] for row in rows]
+    finally:
+        conn.close()
