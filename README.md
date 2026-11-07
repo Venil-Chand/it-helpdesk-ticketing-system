@@ -51,7 +51,7 @@ The project demonstrates Python programming, web development, relational databas
 | Technician | Update ticket status, manage assignments and add comments |
 | Regular User | Create tickets, view permitted pages and add comments |
 
-The existing application uses three roles. Further authorization improvements are planned, particularly around ticket ownership and access restrictions.
+Ticket ownership is enforced for regular users across the dashboard, search, ticket detail and comment routes. Regular users cannot reach another person's ticket by URL, by search, or by posting a comment request.
 
 ---
 
@@ -184,7 +184,16 @@ it-helpdesk-ticketing-system/
 ├── .gitignore
 ├── README.md
 ├── tests/
-│   └── test_authentication.py
+│   ├── test_account_setup.py
+│   ├── test_authentication.py
+│   ├── test_authorization.py
+│   ├── test_csrf.py
+│   ├── test_database_filters.py
+│   ├── test_logout.py
+│   ├── test_rate_limit.py
+│   ├── test_search_route.py
+│   ├── test_ticket_ownership.py
+│   └── test_ticket_search.py
 ├── templates/
 │   ├── base.html
 │   ├── login.html
@@ -203,7 +212,7 @@ it-helpdesk-ticketing-system/
 | `database.py` | SQLite tables, queries and ticket functions |
 | `setup_accounts.py` | Initial administrator setup and password changes |
 | `migrate.py` | Migration from an earlier database structure |
-| `tests/test_authentication.py` | Automated authentication access tests |
+| `tests/` | 47 automated tests covering auth, CSRF, ownership and search |
 
 The local `helpdesk.db` database and `.env` file are excluded from version control.
 
@@ -282,26 +291,38 @@ All search values are passed as bound SQL parameters, so a term such as `' OR 1=
 
 ## Automated Testing
 
-The project includes automated authentication tests using Python's built-in `unittest` framework.
+The project includes 47 automated tests using Python's built-in `unittest` framework.
 
-To run the tests:
+To run the full suite:
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-The initial four tests check:
+To run a single test file:
 
-| Test | Purpose |
-|---|---|
-| Login page | Confirm `/login` is accessible |
-| Dashboard protection | Check that anonymous visitors are redirected |
-| New ticket protection | Check that anonymous visitors cannot access the creation page |
-| Ticket detail protection | Check that anonymous visitors are redirected |
+```bash
+python -m unittest tests.test_search_route -v
+```
 
-These four tests have passed in local development.
+### Test coverage by file
 
-The current tests do not provide complete security coverage. Further testing is planned for password changes, authorization rules, invalid logins and database operations.
+| Test file | Tests | Purpose |
+|---|---|---|
+| `test_authentication.py` | 4 | Protected pages redirect anonymous visitors |
+| `test_account_setup.py` | 3 | Password hashing and password change rules |
+| `test_authorization.py` | 3 | Only staff may update ticket status |
+| `test_csrf.py` | 6 | State-changing forms reject missing or invalid tokens |
+| `test_logout.py` | 4 | Logout requires POST with a valid CSRF token |
+| `test_rate_limit.py` | 1 | Repeated login attempts are throttled |
+| `test_ticket_ownership.py` | 6 | Users cannot view or comment on others' tickets |
+| `test_database_filters.py` | 4 | Per-user and global ticket filtering and statistics |
+| `test_ticket_search.py` | 5 | Search SQL behaviour and injection resistance |
+| `test_search_route.py` | 11 | Search route, rendered HTML and role restrictions |
+
+Tests never touch the real `helpdesk.db`. Database-level tests redirect `DB_PATH` to a temporary SQLite file, and route-level tests mock the database functions.
+
+Coverage is still not exhaustive. Load testing, concurrency testing and end-to-end browser testing remain outstanding.
 
 ---
 
@@ -315,13 +336,14 @@ The current tests do not provide complete security coverage. Further testing is 
 | Hardcoded account creation | Removed from database initialization |
 | Initial administrator setup | Implemented as a local script |
 | Password changing | Implemented as a local script |
-| CSRF protection | Not implemented |
-| Login rate limiting | Not implemented |
-| Ticket ownership authorization | Requires further review |
+| CSRF protection | Implemented on all state-changing forms |
+| Login rate limiting | Implemented (5 attempts per minute) |
+| Ticket ownership authorization | Implemented and enforced in SQL |
+| Search ownership restrictions | Implemented and tested |
 | HTTPS | Not configured |
-| Debug mode | Must be disabled before deployment |
+| Debug mode | Disabled (`debug=False`) |
 | Web-based account administration | Not implemented |
-| Automated security testing | Basic access tests implemented |
+| Automated security testing | 47 tests covering auth, CSRF, ownership and search |
 
 Existing databases may still contain old demonstration credentials. Those passwords must be changed before relying on the updated authentication process.
 
@@ -336,7 +358,7 @@ Security improvements are ongoing.
 - No dashboard pagination
 - No web-based password change form
 - No administrative user management interface
-- Limited automated test coverage
+- No end-to-end browser testing
 - No load or concurrency testing
 - Not configured for production deployment
 
@@ -351,13 +373,13 @@ Security improvements are ongoing.
 - [x] Local administrator account setup
 - [x] Command-line password changes
 - [x] Basic authentication access tests
-- [ ] Add CSRF protection
-- [ ] Implement login rate limiting
-- [ ] Improve ticket ownership authorization
+- [x] Add CSRF protection
+- [x] Implement login rate limiting
+- [x] Improve ticket ownership authorization
+- [x] Expand authentication and authorization tests
+- [x] Disable debug mode for deployment
 - [ ] Add a secure web-based change-password feature
 - [ ] Add administrator-controlled user creation
-- [ ] Expand authentication and authorization tests
-- [ ] Disable debug mode for deployment
 - [ ] Configure HTTPS for production
 
 ### Application Features
