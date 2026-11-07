@@ -32,6 +32,7 @@ The project demonstrates Python programming, web development, relational databas
 - **Role-based permissions** — administrator, technician and regular user
 - **Ticket creation** — create support requests with title, description and priority
 - **Dashboard** — view ticket statistics and support requests
+- **Ticket search** — search tickets by title or description, combined with filters
 - **Ticket filtering** — filter tickets by status and priority
 - **Ticket details** — view descriptions, updates and comments
 - **Ticket management** — update status and technician assignment
@@ -244,6 +245,41 @@ The `setup_accounts.py` script uses `getpass`, password verification and SQL upd
 
 ---
 
+## Ticket Search and Filtering
+
+The dashboard provides a search box alongside the existing status and priority dropdowns. Searching matches text in either the ticket **title** or **description**.
+
+### Using search
+
+1. Type a term into the search box and press **Search**.
+2. Optionally narrow the results further using the **Status** and **Priority** dropdowns.
+3. The search term stays in the box so you can see what produced the current results.
+4. Press **Clear** to reset the search and both filters at once.
+
+If nothing matches, the dashboard shows a message naming the term that was searched for.
+
+### How a search travels through the application
+
+| Step | What happens |
+|---|---|
+| 1. Browser | The form submits `GET /?q=printer&status=Open&priority=All` |
+| 2. Flask route | `index()` reads `q`, `status` and `priority` from the query string |
+| 3. Role check | Staff search all tickets; regular users have their username attached |
+| 4. Database | `search_tickets()` builds a parameterised `LIKE` query |
+| 5. Template | Results render in the ticket table, with the term kept in the input |
+
+### Search and ticket ownership
+
+Ownership is enforced in SQL, not filtered in Python afterwards.
+
+When a regular user searches, `search_tickets()` receives their username and places `created_by = ?` as a condition in the `WHERE` clause. There is no URL a regular user can construct that returns another person's ticket, because the restriction is applied in the query itself rather than to the results.
+
+Administrators and technicians search without that restriction, which is what lets them see the whole queue.
+
+All search values are passed as bound SQL parameters, so a term such as `' OR 1=1 --` is treated as literal text to look for rather than as SQL. The search term is also capped at 100 characters by the route, independently of the `maxlength` set on the input.
+
+---
+
 ## Automated Testing
 
 The project includes automated authentication tests using Python's built-in `unittest` framework.
@@ -330,7 +366,8 @@ Security improvements are ongoing.
 - [ ] File attachments
 - [ ] Dashboard pagination
 - [ ] Ticket export to CSV
-- [ ] Advanced search
+- [x] Ticket search by title and description
+- [ ] Advanced search (date ranges, assignee, multi-field)
 - [ ] Ticket activity history
 - [ ] Additional dashboard reports
 
