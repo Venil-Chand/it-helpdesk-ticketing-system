@@ -290,6 +290,45 @@ class TestSearchRoute(unittest.TestCase):
             mock_search.assert_not_called()
 
     # -----------------------------------------------------
+    # INPUT LENGTH LIMIT
+    # -----------------------------------------------------
+
+    def test_overlong_search_term_is_truncated(self):
+        """A search term longer than the limit must be cut server-side.
+
+        The template sets maxlength="100" but that only constrains the
+        browser. A crafted URL can send any length, so the route must
+        enforce the limit itself.
+        """
+        self.login_as("alice", "user")
+
+        # 500 characters, well over the 100 character limit
+        long_term = "a" * 500
+
+        with patch(
+            "app.db.search_tickets",
+            return_value=[]
+        ) as mock_search, patch(
+            "app.db.get_stats",
+            return_value=self.mock_stats
+        ):
+
+            response = self.client.get(f"/?q={long_term}")
+
+            self.assertEqual(response.status_code, 200)
+
+            # The term reaching the database must be truncated
+            passed_term = mock_search.call_args.kwargs["search_text"]
+
+            self.assertEqual(len(passed_term), 100)
+
+            # Ownership must still be enforced alongside truncation
+            self.assertEqual(
+                mock_search.call_args.kwargs["username"],
+                "alice"
+            )
+
+    # -----------------------------------------------------
     # AUTHENTICATION
     # -----------------------------------------------------
 

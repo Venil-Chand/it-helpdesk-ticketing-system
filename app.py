@@ -91,6 +91,9 @@ STATUSES = [
     "Closed"
 ]
 
+# Longest accepted search term, matching the template's maxlength
+MAX_SEARCH_LENGTH = 100
+
 
 # ---------------------------------------------------
 # AUTHENTICATION AND AUTHORIZATION HELPERS
@@ -237,10 +240,12 @@ def index():
     if redir:
         return redir
 
-    # Read search text from the URL
+    # Read search text from the URL.
+    # The maxlength attribute in the template is client-side only, so the
+    # limit is enforced again here for requests that bypass the browser.
     search_query = request.args.get(
         "q", ""
-    ).strip()
+    ).strip()[:MAX_SEARCH_LENGTH]
 
     # Read existing dashboard filters
     status_filter = request.args.get(
