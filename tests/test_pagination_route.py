@@ -11,13 +11,15 @@ opened, so an unmocked database call fails instead of reading real data.
 """
 
 import os
+import re
 import tempfile
 import unittest
+from html import unescape
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
 import database as db
-from app import app, build_pagination, parse_page
+from app import app, build_pagination, page_window, parse_page
 
 
 class TestParsePage(unittest.TestCase):
@@ -45,6 +47,49 @@ class TestParsePage(unittest.TestCase):
 
         self.assertIsInstance(page, int)
         self.assertGreaterEqual(page, 1)
+
+
+class TestPageWindow(unittest.TestCase):
+    """None in the expected lists marks an ellipsis."""
+
+    def test_single_page(self):
+        self.assertEqual(page_window(1, 1), [1])
+
+    def test_few_pages_are_all_shown(self):
+        self.assertEqual(page_window(3, 5), [1, 2, 3, 4, 5])
+
+    def test_middle_page_has_gaps_on_both_sides(self):
+        self.assertEqual(
+            page_window(10, 20),
+            [1, None, 8, 9, 10, 11, 12, None, 20]
+        )
+
+    def test_first_page_has_gap_only_before_last(self):
+        self.assertEqual(page_window(1, 20), [1, 2, 3, None, 20])
+
+    def test_last_page_has_gap_only_after_first(self):
+        self.assertEqual(page_window(20, 20), [1, None, 18, 19, 20])
+
+    def test_single_missing_page_is_shown_not_hidden(self):
+        # Between 1 and 3 only page 2 is missing. Showing "…" in place
+        # of one page would hide it for no saving in space.
+        self.assertEqual(
+            page_window(5, 20),
+            [1, 2, 3, 4, 5, 6, 7, None, 20]
+        )
+        self.assertEqual(
+            page_window(16, 20),
+            [1, None, 14, 15, 16, 17, 18, 19, 20]
+        )
+
+    def test_window_never_exceeds_the_page_range(self):
+        for current in range(1, 8):
+            with self.subTest(current=current):
+                numbers = [n for n in page_window(current, 7) if n]
+
+                self.assertEqual(min(numbers), 1)
+                self.assertEqual(max(numbers), 7)
+                self.assertEqual(numbers, sorted(set(numbers)))
 
 
 class TestBuildPagination(unittest.TestCase):
@@ -217,7 +262,7 @@ class TestDashboardPaginationRoute(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn('aria-label="Ticket pages"', html)
-        self.assertIn("Page 2 of 3", text)
+        self.assertIn('aria-current="page"', html)
         self.assertIn("Showing 11–20 of 25 tickets", text)
 
         # Previous goes to page 1 and Next goes to page 3,
@@ -228,6 +273,35 @@ class TestDashboardPaginationRoute(unittest.TestCase):
         self.assertIn(
             'href="/?page=3&amp;q=printer&amp;priority=High"', html
         )
+
+    def test_page_numbers_show_a_window_with_gaps(self):
+        self.login_as("tech1", "technician")
+
+        # 200 tickets at 10 per page is 20 pages; view page 10
+        response, _, _ = self.get_dashboard("/?page=10", total=200)
+        html = response.get_data(as_text=True)
+
+        self.assertEqual(response.status_code, 200)
+
+        # Every pagination link starts with "/?"; other links do not
+        hrefs = [unescape(h) for h in re.findall(r'href="(/\?[^"]*)"', html)]
+        linked = {
+            int(parse_qs(urlparse(h).query)["page"][0]) for h in hrefs
+        }
+
+        # First, last and two either side of 10 are links; 10 itself
+        # is the current page and is not a link
+        self.assertEqual(linked, {1, 8, 9, 11, 12, 20})
+
+        # One ellipsis before page 8 and one after page 12
+        self.assertEqual(html.count("&hellip;"), 2)
+
+        # The current page is marked for screen readers
+        current = re.search(
+            r'aria-current="page">\s*<span class="page-link">\s*(\d+)',
+            html
+        )
+        self.assertEqual(current.group(1), "10")
 
     def test_single_page_shows_no_navigation(self):
         self.login_as("alice", "user")

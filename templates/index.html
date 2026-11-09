@@ -351,8 +351,10 @@
 
         {% if pagination.total_pages > 1 %}
 
+            <!-- Small screens show Previous, the current page and Next.
+                 Other page numbers appear from the sm breakpoint up. -->
             <nav aria-label="Ticket pages">
-                <ul class="pagination pagination-sm mb-0">
+                <ul class="pagination pagination-sm flex-wrap mb-0">
 
                     <!-- Previous Page -->
                     {% if pagination.has_prev %}
@@ -360,26 +362,55 @@
                             <a
                                 class="page-link"
                                 href="{{ url_for('index', page=pagination.page - 1, **link_args) }}"
+                                aria-label="Previous page"
                             >
-                                <i class="bi bi-chevron-left"></i>
+                                <i class="bi bi-chevron-left" aria-hidden="true"></i>
                                 Previous
                             </a>
                         </li>
                     {% else %}
                         <li class="page-item disabled">
                             <span class="page-link">
-                                <i class="bi bi-chevron-left"></i>
+                                <i class="bi bi-chevron-left" aria-hidden="true"></i>
                                 Previous
                             </span>
                         </li>
                     {% endif %}
 
-                    <!-- Current Page -->
-                    <li class="page-item active" aria-current="page">
-                        <span class="page-link">
-                            Page {{ pagination.page }} of {{ pagination.total_pages }}
-                        </span>
-                    </li>
+                    <!-- Page Numbers -->
+                    {% for number in pagination.pages %}
+
+                        {% if number is none %}
+
+                            <!-- Gap between page numbers -->
+                            <li class="page-item disabled d-none d-sm-block">
+                                <span class="page-link">&hellip;</span>
+                            </li>
+
+                        {% elif number == pagination.page %}
+
+                            <!-- Current Page -->
+                            <li class="page-item active" aria-current="page">
+                                <span class="page-link">
+                                    {{ number }}<span class="d-sm-none"> of {{ pagination.total_pages }}</span>
+                                </span>
+                            </li>
+
+                        {% else %}
+
+                            <li class="page-item d-none d-sm-block">
+                                <a
+                                    class="page-link"
+                                    href="{{ url_for('index', page=number, **link_args) }}"
+                                    aria-label="Page {{ number }}"
+                                >
+                                    {{ number }}
+                                </a>
+                            </li>
+
+                        {% endif %}
+
+                    {% endfor %}
 
                     <!-- Next Page -->
                     {% if pagination.has_next %}
@@ -387,16 +418,17 @@
                             <a
                                 class="page-link"
                                 href="{{ url_for('index', page=pagination.page + 1, **link_args) }}"
+                                aria-label="Next page"
                             >
                                 Next
-                                <i class="bi bi-chevron-right"></i>
+                                <i class="bi bi-chevron-right" aria-hidden="true"></i>
                             </a>
                         </li>
                     {% else %}
                         <li class="page-item disabled">
                             <span class="page-link">
                                 Next
-                                <i class="bi bi-chevron-right"></i>
+                                <i class="bi bi-chevron-right" aria-hidden="true"></i>
                             </span>
                         </li>
                     {% endif %}

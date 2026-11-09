@@ -168,6 +168,41 @@ def parse_page(value):
     return max(1, page)
 
 
+def page_window(current, total_pages, radius=2):
+    """
+    Choose which page numbers to show as links.
+
+    Always includes the first and last page, plus `radius` pages either
+    side of the current one. None marks a gap, shown as an ellipsis.
+    For example, page 10 of 20 gives [1, None, 8, 9, 10, 11, 12, None, 20].
+    """
+
+    shown = {1, total_pages}
+    shown.update(
+        range(
+            max(1, current - radius),
+            min(total_pages, current + radius) + 1
+        )
+    )
+
+    pages = []
+    previous = 0
+
+    for number in sorted(shown):
+        gap = number - previous
+
+        # A gap of exactly one page shows that page, not an ellipsis
+        if gap == 2:
+            pages.append(previous + 1)
+        elif gap > 2:
+            pages.append(None)
+
+        pages.append(number)
+        previous = number
+
+    return pages
+
+
 def build_pagination(page, total_items, per_page):
     """Work out the page details the dashboard template displays."""
 
@@ -187,7 +222,8 @@ def build_pagination(page, total_items, per_page):
         "has_prev": page > 1,
         "has_next": page < total_pages,
         "first_item": first_item,
-        "last_item": min(page * per_page, total_items)
+        "last_item": min(page * per_page, total_items),
+        "pages": page_window(page, total_pages)
     }
 
 
