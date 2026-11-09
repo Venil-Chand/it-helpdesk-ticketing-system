@@ -34,12 +34,13 @@ The project demonstrates Python programming, web development, relational databas
 - **Dashboard** — view ticket statistics and support requests
 - **Ticket search** — search tickets by title or description, combined with filters
 - **Ticket filtering** — filter tickets by status and priority
+- **Dashboard pagination** — 10 tickets per page with numbered navigation that keeps the search and filters
 - **Ticket details** — view descriptions, updates and comments
 - **Ticket management** — update status and technician assignment
 - **Comments** — add notes to existing tickets
 - **Account setup** — create the first administrator using a terminal script
 - **Password changes** — verify the current password before changing it
-- **Automated tests** — test access to login and protected pages
+- **Automated tests** — 108 tests covering authentication, authorization, CSRF, search and pagination
 
 ---
 
@@ -190,6 +191,9 @@ it-helpdesk-ticketing-system/
 │   ├── test_csrf.py
 │   ├── test_database_filters.py
 │   ├── test_logout.py
+│   ├── test_pagination_db.py
+│   ├── test_pagination_integration.py
+│   ├── test_pagination_route.py
 │   ├── test_rate_limit.py
 │   ├── test_search_route.py
 │   ├── test_ticket_ownership.py
@@ -212,7 +216,7 @@ it-helpdesk-ticketing-system/
 | `database.py` | SQLite tables, queries and ticket functions |
 | `setup_accounts.py` | Initial administrator setup and password changes |
 | `migrate.py` | Migration from an earlier database structure |
-| `tests/` | 47 automated tests covering auth, CSRF, ownership and search |
+| `tests/` | 108 automated tests covering auth, CSRF, ownership, search and pagination |
 
 The local `helpdesk.db` database and `.env` file are excluded from version control.
 
@@ -272,16 +276,16 @@ If nothing matches, the dashboard shows a message naming the term that was searc
 | Step | What happens |
 |---|---|
 | 1. Browser | The form submits `GET /?q=printer&status=Open&priority=All` |
-| 2. Flask route | `index()` reads `q`, `status` and `priority` from the query string |
+| 2. Flask route | `index()` reads `q`, `status`, `priority` and `page` from the query string |
 | 3. Role check | Staff search all tickets; regular users have their username attached |
-| 4. Database | `search_tickets()` builds a parameterised `LIKE` query |
+| 4. Database | `count_tickets()` and `get_tickets_page()` apply the same parameterised `LIKE` filter, one to count matches and one to fetch a page |
 | 5. Template | Results render in the ticket table, with the term kept in the input |
 
 ### Search and ticket ownership
 
 Ownership is enforced in SQL, not filtered in Python afterwards.
 
-When a regular user searches, `search_tickets()` receives their username and places `created_by = ?` as a condition in the `WHERE` clause. There is no URL a regular user can construct that returns another person's ticket, because the restriction is applied in the query itself rather than to the results.
+When a regular user searches, the query functions receive their username, and the shared `_ticket_filters()` helper places `created_by = ?` as a condition in the `WHERE` clause. There is no URL a regular user can construct that returns another person's ticket, because the restriction is applied in the query itself rather than to the results.
 
 Administrators and technicians search without that restriction, which is what lets them see the whole queue.
 
@@ -289,9 +293,65 @@ All search values are passed as bound SQL parameters, so a term such as `' OR 1=
 
 ---
 
+## Dashboard Pagination
+
+The dashboard shows **10 tickets per page**, newest first. Below the table it states which tickets are on screen, for example *Showing 11–20 of 47 tickets*.
+
+### Using pagination
+
+- **Previous** and **Next** move one page at a time, and are disabled on the first and last page.
+- Page numbers jump straight to a page. The first page, the last page and two pages either side of the current one are shown, with `…` marking each gap: `1 … 4 5 6 7 8 … 11`.
+- On small screens only **Previous**, the current page (for example *2 of 5*) and **Next** are shown.
+- Every page link keeps the active search and filters, so page 2 of a printer search is still a printer search.
+- Starting a new search or changing a filter returns to page 1.
+
+### Page numbers in the URL
+
+The page is part of the address, so any page can be bookmarked or shared:
+
+```text
+/?page=2
+/?q=printer&status=Open&priority=High&page=2
+```
+
+| Requested page | Result |
+|---|---|
+| Missing | Page 1 |
+| Zero, negative or not a number, e.g. `?page=abc` | Page 1 |
+| Past the last page, e.g. `?page=99` | Redirects to the last page, keeping the search and filters |
+
+### How pagination works
+
+| Step | What happens |
+|---|---|
+| 1. Read the page | `parse_page()` turns `?page=` into a whole number of at least 1 |
+| 2. Decide ownership | Staff see every ticket; regular users are limited to their own |
+| 3. Count | `count_tickets()` runs `SELECT COUNT(*)` with the active filters |
+| 4. Work out pages | `build_pagination()` calculates `ceil(total / 10)` pages |
+| 5. Fetch one page | `get_tickets_page()` adds `LIMIT ? OFFSET ?`, binding 10 and `(page - 1) * 10` as parameters |
+| 6. Render | The template builds every link with `url_for()`, carrying the filters |
+
+Only the ten tickets being displayed are read from the database. The application never loads every ticket into Python and slices the list.
+
+Tickets are ordered by `created_at DESC, id DESC`. The `id` breaks ties between tickets created in the same second, giving each ticket one fixed position, so moving between pages never repeats or skips a ticket.
+
+An index on `(created_at DESC, id DESC)` lets SQLite read the newest tickets for staff directly in order, instead of sorting the whole table on every request. Regular users' pages already use the `(created_by, created_at DESC, id DESC)` index.
+
+### Pagination and ticket ownership
+
+The ownership restriction is applied **before** pagination, inside the SQL `WHERE` clause, and the count and page queries always receive identical filters. As a result:
+
+- a regular user's pages contain only their own tickets
+- the total in *Showing 1–10 of N* counts only their tickets, so it does not reveal how many tickets other users have
+- a page number that would only exist for staff redirects to the user's own last page
+
+Adding parameters such as `?username=bob`, `?role=admin` or `?per_page=1000` has no effect. The route reads only `q`, `status`, `priority` and `page`. The user's identity and role come from the signed session cookie, which cannot be altered without the secret key, and never from the URL.
+
+---
+
 ## Automated Testing
 
-The project includes 47 automated tests using Python's built-in `unittest` framework.
+The project includes 108 automated tests using Python's built-in `unittest` framework.
 
 To run the full suite:
 
@@ -316,13 +376,20 @@ python -m unittest tests.test_search_route -v
 | `test_logout.py` | 4 | Logout requires POST with a valid CSRF token |
 | `test_rate_limit.py` | 1 | Repeated login attempts are throttled |
 | `test_ticket_ownership.py` | 6 | Users cannot view or comment on others' tickets |
-| `test_database_filters.py` | 4 | Per-user and global ticket filtering and statistics |
+| `test_database_filters.py` | 5 | Per-user and global ticket filtering and statistics |
 | `test_ticket_search.py` | 5 | Search SQL behaviour and injection resistance |
 | `test_search_route.py` | 11 | Search route, rendered HTML and role restrictions |
+| `test_pagination_db.py` | 18 | `LIMIT`/`OFFSET` queries, ordering, page size limits and the index |
+| `test_pagination_route.py` | 24 | Page parsing, page maths, page-number window and links |
+| `test_pagination_integration.py` | 18 | Full requests with no mocks: navigation, filters and ownership |
 
-Tests never touch the real `helpdesk.db`. Database-level tests redirect `DB_PATH` to a temporary SQLite file, and route-level tests mock the database functions.
+Tests never touch the real `helpdesk.db`:
 
-Coverage is still not exhaustive. Load testing, concurrency testing and end-to-end browser testing remain outstanding.
+- **Database tests** redirect `DB_PATH` to a temporary SQLite file.
+- **Route tests** mock the database functions, and point `DB_PATH` at a location that cannot be opened, so an accidental unmocked query fails loudly instead of reading real data.
+- **Integration tests** mock nothing. Each request runs through the real route, real SQL against a temporary database, and the real template, and several tests follow the rendered **Next** links page by page.
+
+Coverage is still not exhaustive. Load testing, concurrency testing and automated browser testing remain outstanding.
 
 ---
 
@@ -340,10 +407,11 @@ Coverage is still not exhaustive. Load testing, concurrency testing and end-to-e
 | Login rate limiting | Implemented (5 attempts per minute) |
 | Ticket ownership authorization | Implemented and enforced in SQL |
 | Search ownership restrictions | Implemented and tested |
+| Pagination ownership restrictions | Applied before paging; counts and pages tested |
 | HTTPS | Not configured |
 | Debug mode | Disabled (`debug=False`) |
 | Web-based account administration | Not implemented |
-| Automated security testing | 47 tests covering auth, CSRF, ownership and search |
+| Automated security testing | 108 tests covering auth, CSRF, ownership, search and pagination |
 
 Existing databases may still contain old demonstration credentials. Those passwords must be changed before relying on the updated authentication process.
 
@@ -355,7 +423,6 @@ Security improvements are ongoing.
 
 - No email notifications
 - No file attachments
-- No dashboard pagination
 - No web-based password change form
 - No administrative user management interface
 - No end-to-end browser testing
@@ -386,7 +453,7 @@ Security improvements are ongoing.
 
 - [ ] Email notifications
 - [ ] File attachments
-- [ ] Dashboard pagination
+- [x] Dashboard pagination
 - [ ] Ticket export to CSV
 - [x] Ticket search by title and description
 - [ ] Advanced search (date ranges, assignee, multi-field)
