@@ -13,6 +13,9 @@ DB_PATH = os.path.join(
     "helpdesk.db"
 )
 
+# Largest page size any caller may request, to keep queries cheap
+MAX_PER_PAGE = 50
+
 
 def get_db():
     """Connect to the SQLite database."""
@@ -79,6 +82,13 @@ def init_db():
     c.execute('''
         CREATE INDEX IF NOT EXISTS idx_tickets_owner_date
         ON tickets (created_by, created_at DESC, id DESC)
+    ''')
+
+    # Let staff pages read the newest tickets in order from the index,
+    # instead of sorting the whole table on every dashboard request
+    c.execute('''
+        CREATE INDEX IF NOT EXISTS idx_tickets_date
+        ON tickets (created_at DESC, id DESC)
     ''')
 
     # Save database changes
@@ -217,6 +227,90 @@ def search_tickets(
 
     try:
         return conn.execute(query, params).fetchall()
+
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------
+# PAGINATED TICKET QUERIES
+# ---------------------------------------------------
+
+def count_tickets(
+    *,
+    search_text="",
+    username=None,
+    status_filter="All",
+    priority_filter="All"
+):
+    """Count the tickets matching the same filters as get_tickets_page()."""
+
+    where, params = _ticket_filters(
+        search_text=search_text,
+        username=username,
+        status_filter=status_filter,
+        priority_filter=priority_filter
+    )
+
+    conn = get_db()
+
+    try:
+        return conn.execute(
+            "SELECT COUNT(*) FROM tickets" + where,
+            params
+        ).fetchone()[0]
+
+    finally:
+        conn.close()
+
+
+def get_tickets_page(
+    *,
+    per_page,
+    page=1,
+    search_text="",
+    username=None,
+    status_filter="All",
+    priority_filter="All"
+):
+    """
+    Retrieve one page of matching tickets, newest first.
+
+    Only the rows for the requested page are read from the database,
+    using LIMIT and OFFSET. Pages are numbered from 1, and a page past
+    the end returns an empty list.
+    """
+
+    # Keep the page number and page size inside safe bounds
+    page = max(1, int(page))
+    per_page = max(1, min(int(per_page), MAX_PER_PAGE))
+
+    # Page 1 skips 0 rows, page 2 skips per_page rows, and so on
+    offset = (page - 1) * per_page
+
+    where, params = _ticket_filters(
+        search_text=search_text,
+        username=username,
+        status_filter=status_filter,
+        priority_filter=priority_filter
+    )
+
+    # id DESC breaks ties between tickets created in the same second,
+    # giving every ticket one fixed position so pages never overlap
+    query = (
+        "SELECT * FROM tickets"
+        + where
+        + " ORDER BY created_at DESC, id DESC"
+        + " LIMIT ? OFFSET ?"
+    )
+
+    conn = get_db()
+
+    try:
+        return conn.execute(
+            query,
+            params + [per_page, offset]
+        ).fetchall()
 
     finally:
         conn.close()
