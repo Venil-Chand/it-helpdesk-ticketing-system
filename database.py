@@ -89,45 +89,72 @@ def init_db():
 
 
 # ---------------------------------------------------
+# SHARED TICKET FILTERS
+# ---------------------------------------------------
+
+def _ticket_filters(
+    *,  # keyword-only, so a username can never land in search_text
+    search_text="",
+    username=None,
+    status_filter=None,
+    priority_filter=None
+):
+    """
+    Build the WHERE clause and parameters shared by ticket queries.
+
+    username=None means no ownership restriction, which is only
+    correct for administrators and technicians. All values are
+    returned as bound parameters, never inserted into the SQL text.
+
+    Returns (where_clause, params); where_clause is "" if unfiltered.
+    """
+
+    conditions = []
+    params = []
+
+    # Restrict results to tickets created by one user
+    if username is not None:
+        conditions.append("created_by = ?")
+        params.append(username)
+
+    # Remove unnecessary spaces from the search text
+    search_text = (search_text or "").strip()
+
+    # Search in both title and description
+    if search_text:
+        conditions.append("(title LIKE ? OR description LIKE ?)")
+
+        # % matches any number of characters
+        search_pattern = f"%{search_text}%"
+        params.extend([search_pattern, search_pattern])
+
+    # Apply optional status filter
+    if status_filter and status_filter != "All":
+        conditions.append("status = ?")
+        params.append(status_filter)
+
+    # Apply optional priority filter
+    if priority_filter and priority_filter != "All":
+        conditions.append("priority = ?")
+        params.append(priority_filter)
+
+    if not conditions:
+        return "", params
+
+    return " WHERE " + " AND ".join(conditions), params
+
+
+# ---------------------------------------------------
 # TICKET FUNCTIONS
 # ---------------------------------------------------
 
 def get_all_tickets(status_filter=None, priority_filter=None):
     """Retrieve all tickets with optional filters."""
 
-    conn = get_db()
-
-    query = "SELECT * FROM tickets"
-    params = []
-    conditions = []
-
-    # Filter tickets by status
-    if status_filter and status_filter != "All":
-        conditions.append("status = ?")
-        params.append(status_filter)
-
-    # Filter tickets by priority
-    if priority_filter and priority_filter != "All":
-        conditions.append("priority = ?")
-        params.append(priority_filter)
-
-    # Add conditions to the SQL query
-    if conditions:
-        query += " WHERE " + " AND ".join(conditions)
-
-    # Display newest tickets first
-    query += " ORDER BY created_at DESC, id DESC"
-
-    try:
-        tickets = conn.execute(
-            query,
-            params
-        ).fetchall()
-
-        return tickets
-
-    finally:
-        conn.close()
+    return search_tickets(
+        status_filter=status_filter,
+        priority_filter=priority_filter
+    )
 
 
 # ---------------------------------------------------
@@ -141,36 +168,16 @@ def get_tickets_by_user(
 ):
     """Retrieve only tickets created by a specific user."""
 
-    conn = get_db()
+    # In the shared filters None means "every user", so a missing
+    # username must stop here instead of widening the query
+    if username is None:
+        return []
 
-    # Restrict results to the specified username
-    query = "SELECT * FROM tickets WHERE created_by = ?"
-
-    params = [username]
-
-    # Apply optional status filter
-    if status_filter and status_filter != "All":
-        query += " AND status = ?"
-        params.append(status_filter)
-
-    # Apply optional priority filter
-    if priority_filter and priority_filter != "All":
-        query += " AND priority = ?"
-        params.append(priority_filter)
-
-    # Display newest tickets first
-    query += " ORDER BY created_at DESC, id DESC"
-
-    try:
-        tickets = conn.execute(
-            query,
-            params
-        ).fetchall()
-
-        return tickets
-
-    finally:
-        conn.close()
+    return search_tickets(
+        username=username,
+        status_filter=status_filter,
+        priority_filter=priority_filter
+    )
 
 
 # ---------------------------------------------------
@@ -192,61 +199,24 @@ def search_tickets(
     Optional status and priority filters are supported.
     """
 
-    conn = get_db()
-
-    # Start with the tickets table
-    query = "SELECT * FROM tickets"
-
-    conditions = []
-    params = []
-
-    # Restrict results to a particular user
-    if username is not None:
-        conditions.append("created_by = ?")
-        params.append(username)
-
-    # Remove unnecessary spaces from the search text
-    search_text = search_text.strip()
-
-    # Search in both title and description
-    if search_text:
-
-        conditions.append(
-            "(title LIKE ? OR description LIKE ?)"
-        )
-
-        # % matches any number of characters
-        search_pattern = f"%{search_text}%"
-
-        params.extend([
-            search_pattern,
-            search_pattern
-        ])
-
-    # Apply optional status filter
-    if status_filter and status_filter != "All":
-        conditions.append("status = ?")
-        params.append(status_filter)
-
-    # Apply optional priority filter
-    if priority_filter and priority_filter != "All":
-        conditions.append("priority = ?")
-        params.append(priority_filter)
-
-    # Add all filtering conditions to the SQL query
-    if conditions:
-        query += " WHERE " + " AND ".join(conditions)
+    where, params = _ticket_filters(
+        search_text=search_text,
+        username=username,
+        status_filter=status_filter,
+        priority_filter=priority_filter
+    )
 
     # Display newest matching tickets first
-    query += " ORDER BY created_at DESC, id DESC"
+    query = (
+        "SELECT * FROM tickets"
+        + where
+        + " ORDER BY created_at DESC, id DESC"
+    )
+
+    conn = get_db()
 
     try:
-        tickets = conn.execute(
-            query,
-            params
-        ).fetchall()
-
-        return tickets
+        return conn.execute(query, params).fetchall()
 
     finally:
         conn.close()

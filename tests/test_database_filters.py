@@ -80,6 +80,17 @@ class TestDatabaseFilters(unittest.TestCase):
             "Monitor issue"
         )
 
+    def test_user_query_without_username_returns_nothing(self):
+        # A missing username must never widen the query to every ticket.
+        # A ticket with no owner is included to prove NULL does not match.
+        db.create_ticket(
+            "Orphan ticket", "No owner recorded", "Low", None
+        )
+
+        tickets = db.get_tickets_by_user(None)
+
+        self.assertEqual(len(tickets), 0)
+
     def test_user_statistics(self):
         stats = db.get_stats(username="alice")
 
