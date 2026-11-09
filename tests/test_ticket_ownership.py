@@ -156,9 +156,10 @@ class TestTicketOwnership(unittest.TestCase):
         """
         A regular user must see only their own tickets.
 
-        The dashboard now calls get_tickets_by_user() for regular users,
-        not get_all_tickets(). This test verifies:
-          1. get_tickets_by_user is called with the correct username and filters.
+        The dashboard counts and pages tickets with count_tickets() and
+        get_tickets_page(). This test verifies:
+          1. Both queries are restricted to Alice's username, so neither
+             the page contents nor the ticket total include other users.
           2. get_all_tickets is never called for a regular user.
           3. get_stats is called with username= so statistics are user-specific.
           4. Only Alice's ticket appears in the template context.
@@ -177,9 +178,12 @@ class TestTicketOwnership(unittest.TestCase):
         }
 
         with patch(
-            "app.db.get_tickets_by_user",
+            "app.db.count_tickets",
+            return_value=1
+        ) as mock_count, patch(
+            "app.db.get_tickets_page",
             return_value=alice_only
-        ) as mock_get_by_user, patch(
+        ) as mock_page, patch(
             "app.db.get_all_tickets"
         ) as mock_get_all, patch(
             "app.db.get_stats",
@@ -193,10 +197,24 @@ class TestTicketOwnership(unittest.TestCase):
 
             self.assertEqual(response.status_code, 200)
 
-            # Verify the correct filtering function was called with Alice's
-            # username and the default "All" filters from the query string
-            mock_get_by_user.assert_called_once_with(
-                "alice", "All", "All"
+            # The total must count Alice's tickets only; otherwise
+            # "of N tickets" would reveal how many tickets others have
+            mock_count.assert_called_once_with(
+                search_text="",
+                username="alice",
+                status_filter="All",
+                priority_filter="All"
+            )
+
+            # The page must be read from Alice's tickets only,
+            # starting at page 1 with the default "All" filters
+            mock_page.assert_called_once_with(
+                search_text="",
+                username="alice",
+                status_filter="All",
+                priority_filter="All",
+                page=1,
+                per_page=10
             )
 
             # Regular users must never trigger the all-tickets query

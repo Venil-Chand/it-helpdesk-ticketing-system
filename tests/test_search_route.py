@@ -3,23 +3,27 @@
 Integration tests for the dashboard search route.
 
 These tests exercise the Flask layer rather than the database layer.
-tests/test_ticket_search.py already covers the SQL behaviour of
-search_tickets(). This file checks that:
+tests/test_ticket_search.py and tests/test_pagination_db.py cover the SQL
+itself. This file checks that:
 
   - the index() route reads the 'q' query parameter correctly
-  - the correct database function is chosen for each role
-  - ownership is enforced for regular users at the route level
+  - the correct ownership restriction is applied for each role
+  - the ticket count and the ticket page always use identical filters
   - the rendered HTML contains the search controls
   - the search term is retained in the input after submission
 
-The database functions are mocked so the real helpdesk.db is never read.
-render_template is deliberately NOT mocked, because several tests need to
-inspect the actual rendered HTML.
+The database functions are mocked, and DB_PATH points at a location that
+cannot be opened, so any accidental real database access fails loudly
+instead of silently reading helpdesk.db. render_template is deliberately
+NOT mocked, because several tests need to inspect the actual HTML.
 """
 
+import os
+import tempfile
 import unittest
 from unittest.mock import patch
 
+import database as db
 from app import app
 
 
@@ -35,6 +39,19 @@ class TestSearchRoute(unittest.TestCase):
         app.config["WTF_CSRF_ENABLED"] = False
 
         self.client = app.test_client()
+
+        # Point the database at a folder that does not exist, so an
+        # unmocked query raises an error rather than reading real data
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+
+        db_guard = patch.object(
+            db,
+            "DB_PATH",
+            os.path.join(temp_dir.name, "missing", "helpdesk.db")
+        )
+        db_guard.start()
+        self.addCleanup(db_guard.stop)
 
         # A complete ticket record matching what the template expects
         self.alice_ticket = {
@@ -66,11 +83,54 @@ class TestSearchRoute(unittest.TestCase):
         else:
             app.config["WTF_CSRF_ENABLED"] = self.old_csrf
 
+    # -----------------------------------------------------
+    # HELPERS
+    # -----------------------------------------------------
+
     def login_as(self, username, role):
         """Simulate a logged-in user with the given role."""
         with self.client.session_transaction() as sess:
             sess["username"] = username
             sess["role"] = role
+
+    def dashboard_mocks(self, tickets, total=None):
+        """Patches for every database call the dashboard makes."""
+        if total is None:
+            total = len(tickets)
+
+        return (
+            patch("app.db.count_tickets", return_value=total),
+            patch("app.db.get_tickets_page", return_value=tickets),
+            patch("app.db.get_stats", return_value=self.mock_stats),
+        )
+
+    def assert_queried(
+        self,
+        mock_count,
+        mock_page,
+        *,
+        search_text,
+        username,
+        status="All",
+        priority="All",
+        page=1
+    ):
+        """The count and the page must receive exactly the same filters.
+
+        If they ever differed, the "of N tickets" total could disagree
+        with the rows shown, or reveal tickets the user may not see.
+        """
+        filters = {
+            "search_text": search_text,
+            "username": username,
+            "status_filter": status,
+            "priority_filter": priority,
+        }
+
+        mock_count.assert_called_once_with(**filters)
+        mock_page.assert_called_once_with(
+            **filters, page=page, per_page=10
+        )
 
     # -----------------------------------------------------
     # RENDERED INTERFACE
@@ -80,13 +140,11 @@ class TestSearchRoute(unittest.TestCase):
         """The search input and Search button must appear in the HTML."""
         self.login_as("alice", "user")
 
-        with patch(
-            "app.db.get_tickets_by_user",
-            return_value=[self.alice_ticket]
-        ), patch(
-            "app.db.get_stats",
-            return_value=self.mock_stats
-        ):
+        count_patch, page_patch, stats_patch = self.dashboard_mocks(
+            [self.alice_ticket]
+        )
+
+        with count_patch, page_patch, stats_patch:
 
             response = self.client.get("/")
             html = response.get_data(as_text=True)
@@ -103,13 +161,11 @@ class TestSearchRoute(unittest.TestCase):
         """The submitted search term must stay in the input field."""
         self.login_as("alice", "user")
 
-        with patch(
-            "app.db.search_tickets",
-            return_value=[self.alice_ticket]
-        ), patch(
-            "app.db.get_stats",
-            return_value=self.mock_stats
-        ):
+        count_patch, page_patch, stats_patch = self.dashboard_mocks(
+            [self.alice_ticket]
+        )
+
+        with count_patch, page_patch, stats_patch:
 
             response = self.client.get("/?q=printer")
             html = response.get_data(as_text=True)
@@ -121,13 +177,9 @@ class TestSearchRoute(unittest.TestCase):
         """An unmatched search must tell the user what was searched for."""
         self.login_as("alice", "user")
 
-        with patch(
-            "app.db.search_tickets",
-            return_value=[]
-        ), patch(
-            "app.db.get_stats",
-            return_value=self.mock_stats
-        ):
+        count_patch, page_patch, stats_patch = self.dashboard_mocks([])
+
+        with count_patch, page_patch, stats_patch:
 
             response = self.client.get("/?q=nonexistentterm")
             html = response.get_data(as_text=True)
@@ -144,69 +196,66 @@ class TestSearchRoute(unittest.TestCase):
         """A regular user's search must pass their username to the query."""
         self.login_as("alice", "user")
 
-        with patch(
-            "app.db.search_tickets",
-            return_value=[self.alice_ticket]
-        ) as mock_search, patch(
-            "app.db.get_stats",
-            return_value=self.mock_stats
-        ):
+        count_patch, page_patch, stats_patch = self.dashboard_mocks(
+            [self.alice_ticket]
+        )
+
+        with count_patch as mock_count, page_patch as mock_page, \
+                stats_patch:
 
             response = self.client.get("/?q=printer")
 
             self.assertEqual(response.status_code, 200)
 
             # username must be supplied so SQL filters by created_by
-            mock_search.assert_called_once_with(
+            self.assert_queried(
+                mock_count,
+                mock_page,
                 search_text="printer",
-                username="alice",
-                status_filter="All",
-                priority_filter="All"
+                username="alice"
             )
 
     def test_technician_search_is_not_restricted_by_username(self):
         """Support staff must search across all tickets."""
         self.login_as("tech1", "technician")
 
-        with patch(
-            "app.db.search_tickets",
-            return_value=[self.alice_ticket]
-        ) as mock_search, patch(
-            "app.db.get_stats",
-            return_value=self.mock_stats
-        ):
+        count_patch, page_patch, stats_patch = self.dashboard_mocks(
+            [self.alice_ticket]
+        )
+
+        with count_patch as mock_count, page_patch as mock_page, \
+                stats_patch:
 
             response = self.client.get("/?q=printer")
 
             self.assertEqual(response.status_code, 200)
 
-            # No username argument — staff see every matching ticket
-            mock_search.assert_called_once_with(
+            # username=None means no restriction — staff see every ticket
+            self.assert_queried(
+                mock_count,
+                mock_page,
                 search_text="printer",
-                status_filter="All",
-                priority_filter="All"
+                username=None
             )
 
     def test_admin_search_is_not_restricted_by_username(self):
         """Administrators must also search across all tickets."""
         self.login_as("admin", "admin")
 
-        with patch(
-            "app.db.search_tickets",
-            return_value=[]
-        ) as mock_search, patch(
-            "app.db.get_stats",
-            return_value=self.mock_stats
-        ):
+        count_patch, page_patch, stats_patch = self.dashboard_mocks([])
+
+        with count_patch as mock_count, page_patch as mock_page, \
+                stats_patch:
 
             response = self.client.get("/?q=laptop")
 
             self.assertEqual(response.status_code, 200)
 
-            mock_search.assert_called_once_with(
+            self.assert_queried(
+                mock_count,
+                mock_page,
                 search_text="laptop",
-                status_filter="All",
-                priority_filter="All"
+                username=None
             )
 
     # -----------------------------------------------------
@@ -217,13 +266,10 @@ class TestSearchRoute(unittest.TestCase):
         """Search must work together with the existing dropdown filters."""
         self.login_as("alice", "user")
 
-        with patch(
-            "app.db.search_tickets",
-            return_value=[]
-        ) as mock_search, patch(
-            "app.db.get_stats",
-            return_value=self.mock_stats
-        ):
+        count_patch, page_patch, stats_patch = self.dashboard_mocks([])
+
+        with count_patch as mock_count, page_patch as mock_page, \
+                stats_patch:
 
             response = self.client.get(
                 "/?q=printer&status=Open&priority=High"
@@ -231,63 +277,60 @@ class TestSearchRoute(unittest.TestCase):
 
             self.assertEqual(response.status_code, 200)
 
-            mock_search.assert_called_once_with(
+            self.assert_queried(
+                mock_count,
+                mock_page,
                 search_text="printer",
                 username="alice",
-                status_filter="Open",
-                priority_filter="High"
+                status="Open",
+                priority="High"
             )
 
     # -----------------------------------------------------
-    # EMPTY SEARCH FALLS BACK TO NORMAL RETRIEVAL
+    # EMPTY SEARCH APPLIES NO TEXT FILTER
     # -----------------------------------------------------
 
-    def test_empty_search_uses_standard_ticket_retrieval(self):
-        """With no search term the dashboard must not call search_tickets."""
+    def test_empty_search_applies_no_text_filter(self):
+        """With no search term the dashboard must not filter by text."""
         self.login_as("alice", "user")
 
-        with patch(
-            "app.db.get_tickets_by_user",
-            return_value=[self.alice_ticket]
-        ) as mock_get_by_user, patch(
-            "app.db.search_tickets"
-        ) as mock_search, patch(
-            "app.db.get_stats",
-            return_value=self.mock_stats
-        ):
+        count_patch, page_patch, stats_patch = self.dashboard_mocks(
+            [self.alice_ticket]
+        )
+
+        with count_patch as mock_count, page_patch as mock_page, \
+                stats_patch:
 
             response = self.client.get("/")
 
             self.assertEqual(response.status_code, 200)
 
-            # Normal retrieval is used
-            mock_get_by_user.assert_called_once_with(
-                "alice", "All", "All"
+            self.assert_queried(
+                mock_count,
+                mock_page,
+                search_text="",
+                username="alice"
             )
 
-            # The search path must not be triggered
-            mock_search.assert_not_called()
-
     def test_whitespace_only_search_is_treated_as_empty(self):
-        """A search of only spaces must not trigger a search query."""
+        """A search of only spaces must not filter by text."""
         self.login_as("alice", "user")
 
-        with patch(
-            "app.db.get_tickets_by_user",
-            return_value=[]
-        ) as mock_get_by_user, patch(
-            "app.db.search_tickets"
-        ) as mock_search, patch(
-            "app.db.get_stats",
-            return_value=self.mock_stats
-        ):
+        count_patch, page_patch, stats_patch = self.dashboard_mocks([])
+
+        with count_patch as mock_count, page_patch as mock_page, \
+                stats_patch:
 
             response = self.client.get("/?q=%20%20%20")
 
             self.assertEqual(response.status_code, 200)
 
-            mock_get_by_user.assert_called_once()
-            mock_search.assert_not_called()
+            self.assert_queried(
+                mock_count,
+                mock_page,
+                search_text="",
+                username="alice"
+            )
 
     # -----------------------------------------------------
     # INPUT LENGTH LIMIT
@@ -305,27 +348,22 @@ class TestSearchRoute(unittest.TestCase):
         # 500 characters, well over the 100 character limit
         long_term = "a" * 500
 
-        with patch(
-            "app.db.search_tickets",
-            return_value=[]
-        ) as mock_search, patch(
-            "app.db.get_stats",
-            return_value=self.mock_stats
-        ):
+        count_patch, page_patch, stats_patch = self.dashboard_mocks([])
+
+        with count_patch as mock_count, page_patch as mock_page, \
+                stats_patch:
 
             response = self.client.get(f"/?q={long_term}")
 
             self.assertEqual(response.status_code, 200)
 
-            # The term reaching the database must be truncated
-            passed_term = mock_search.call_args.kwargs["search_text"]
-
-            self.assertEqual(len(passed_term), 100)
-
-            # Ownership must still be enforced alongside truncation
-            self.assertEqual(
-                mock_search.call_args.kwargs["username"],
-                "alice"
+            # Both queries receive the truncated term, and ownership
+            # is still enforced alongside truncation
+            self.assert_queried(
+                mock_count,
+                mock_page,
+                search_text="a" * 100,
+                username="alice"
             )
 
     # -----------------------------------------------------

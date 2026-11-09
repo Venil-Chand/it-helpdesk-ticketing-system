@@ -13,6 +13,7 @@ Open in browser:
 User accounts are managed using setup_accounts.py.
 """
 
+import math
 import os
 
 from flask import (
@@ -94,6 +95,9 @@ STATUSES = [
 # Longest accepted search term, matching the template's maxlength
 MAX_SEARCH_LENGTH = 100
 
+# Number of tickets shown on each dashboard page
+TICKETS_PER_PAGE = 10
+
 
 # ---------------------------------------------------
 # AUTHENTICATION AND AUTHORIZATION HELPERS
@@ -142,6 +146,49 @@ def can_view_ticket(ticket):
 
     # Regular users can view only their own tickets
     return ticket["created_by"] == session.get("username")
+
+
+# ---------------------------------------------------
+# PAGINATION HELPERS
+# ---------------------------------------------------
+
+def parse_page(value):
+    """
+    Convert the ?page= value from the URL into a page number.
+
+    Missing, non-numeric, zero and negative values all become page 1,
+    so a bad page parameter can never cause an error.
+    """
+
+    try:
+        page = int(value)
+    except (TypeError, ValueError):
+        return 1
+
+    return max(1, page)
+
+
+def build_pagination(page, total_items, per_page):
+    """Work out the page details the dashboard template displays."""
+
+    # Round up, so 21 tickets at 10 per page needs 3 pages.
+    # An empty result still has one (empty) page.
+    total_pages = max(1, math.ceil(total_items / per_page))
+
+    if total_items == 0:
+        first_item = 0
+    else:
+        first_item = (page - 1) * per_page + 1
+
+    return {
+        "page": page,
+        "total_pages": total_pages,
+        "total_items": total_items,
+        "has_prev": page > 1,
+        "has_next": page < total_pages,
+        "first_item": first_item,
+        "last_item": min(page * per_page, total_items)
+    }
 
 
 # ---------------------------------------------------
@@ -217,22 +264,12 @@ def logout():
 
 
 # ---------------------------------------------------
-# DASHBOARD
-# ---------------------------------------------------
-
-
-# ---------------------------------------------------
-# DASHBOARD
-# ---------------------------------------------------
-
-
-# ---------------------------------------------------
-# DASHBOARD WITH TICKET SEARCH
+# DASHBOARD WITH SEARCH AND PAGINATION
 # ---------------------------------------------------
 
 @app.route("/")
 def index():
-    """Display and search tickets based on user permissions."""
+    """Display one page of the tickets the current user may see."""
 
     # Check whether the user is logged in
     redir = require_login()
@@ -256,52 +293,66 @@ def index():
         "priority", "All"
     )
 
-    # Check whether the user is support staff
+    # Read the requested page; anything invalid becomes page 1
+    page = parse_page(request.args.get("page"))
+
+    # Decide ownership once and reuse it for every query below.
+    # Staff (None) see all tickets; regular users see only their own.
     if is_tech_or_admin():
-
-        if search_query:
-            # Search all tickets for authorised staff
-            tickets = db.search_tickets(
-                search_text=search_query,
-                status_filter=status_filter,
-                priority_filter=priority_filter
-            )
-
-        else:
-            # Keep existing dashboard behaviour
-            tickets = db.get_all_tickets(
-                status_filter,
-                priority_filter
-            )
-
-        # Statistics across all tickets
-        stats = db.get_stats()
-
+        owner = None
     else:
-        # Identify the logged-in regular user
-        username = session["username"]
+        owner = session["username"]
 
-        if search_query:
-            # Restrict searches to tickets owned by this user
-            tickets = db.search_tickets(
-                search_text=search_query,
-                username=username,
-                status_filter=status_filter,
-                priority_filter=priority_filter
+    filters = {
+        "search_text": search_query,
+        "username": owner,
+        "status_filter": status_filter,
+        "priority_filter": priority_filter
+    }
+
+    # Count matching tickets to find out how many pages exist
+    total_tickets = db.count_tickets(**filters)
+
+    pagination = build_pagination(
+        page,
+        total_tickets,
+        TICKETS_PER_PAGE
+    )
+
+    # Carry the active search and filters into every pagination link.
+    # Default values are left out to keep the URLs short.
+    link_args = {}
+
+    if search_query:
+        link_args["q"] = search_query
+
+    if status_filter != "All":
+        link_args["status"] = status_filter
+
+    if priority_filter != "All":
+        link_args["priority"] = priority_filter
+
+    # A page past the end (old bookmark, edited URL) goes to the last page
+    if page > pagination["total_pages"]:
+        return redirect(
+            url_for(
+                "index",
+                page=pagination["total_pages"],
+                **link_args
             )
+        )
 
-        else:
-            # Keep existing user-specific ticket retrieval
-            tickets = db.get_tickets_by_user(
-                username,
-                status_filter,
-                priority_filter
-            )
+    # Read only the tickets shown on this page
+    tickets = db.get_tickets_page(
+        **filters,
+        page=page,
+        per_page=TICKETS_PER_PAGE
+    )
 
-        # Statistics for the current user only
-        stats = db.get_stats(username=username)
+    # Statistics cover every ticket the user may see, not just this page
+    stats = db.get_stats(username=owner)
 
-    # Display dashboard with search results
+    # Display the dashboard
     return render_template(
         "index.html",
         tickets=tickets,
@@ -310,7 +361,9 @@ def index():
         priority_filter=priority_filter,
         statuses=["All"] + STATUSES,
         priorities=["All"] + PRIORITIES,
-        search_query=search_query
+        search_query=search_query,
+        pagination=pagination,
+        link_args=link_args
     )
 
 

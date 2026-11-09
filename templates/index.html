@@ -336,10 +336,77 @@
 
     </div>
 
-    <!-- Number of Displayed Tickets -->
-    <p class="text-muted small">
-        {{ tickets|length }} ticket(s) shown
-    </p>
+    <!-- ------------------------------------------------ -->
+    <!-- PAGINATION -->
+    <!-- ------------------------------------------------ -->
+
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+
+        <!-- Position within all matching tickets -->
+        <p class="text-muted small mb-0">
+            Showing {{ pagination.first_item }}–{{ pagination.last_item }}
+            of {{ pagination.total_items }}
+            ticket{{ 's' if pagination.total_items != 1 else '' }}
+        </p>
+
+        {% if pagination.total_pages > 1 %}
+
+            <nav aria-label="Ticket pages">
+                <ul class="pagination pagination-sm mb-0">
+
+                    <!-- Previous Page -->
+                    {% if pagination.has_prev %}
+                        <li class="page-item">
+                            <a
+                                class="page-link"
+                                href="{{ url_for('index', page=pagination.page - 1, **link_args) }}"
+                            >
+                                <i class="bi bi-chevron-left"></i>
+                                Previous
+                            </a>
+                        </li>
+                    {% else %}
+                        <li class="page-item disabled">
+                            <span class="page-link">
+                                <i class="bi bi-chevron-left"></i>
+                                Previous
+                            </span>
+                        </li>
+                    {% endif %}
+
+                    <!-- Current Page -->
+                    <li class="page-item active" aria-current="page">
+                        <span class="page-link">
+                            Page {{ pagination.page }} of {{ pagination.total_pages }}
+                        </span>
+                    </li>
+
+                    <!-- Next Page -->
+                    {% if pagination.has_next %}
+                        <li class="page-item">
+                            <a
+                                class="page-link"
+                                href="{{ url_for('index', page=pagination.page + 1, **link_args) }}"
+                            >
+                                Next
+                                <i class="bi bi-chevron-right"></i>
+                            </a>
+                        </li>
+                    {% else %}
+                        <li class="page-item disabled">
+                            <span class="page-link">
+                                Next
+                                <i class="bi bi-chevron-right"></i>
+                            </span>
+                        </li>
+                    {% endif %}
+
+                </ul>
+            </nav>
+
+        {% endif %}
+
+    </div>
 
 {% else %}
 
