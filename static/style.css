@@ -52,6 +52,38 @@ main.container-fluid {
   background-color: #f8f9fa;
 }
 
+/* ── Ticket activity timeline ── */
+.timeline-item {
+  position: relative;
+  padding-left: 2.75rem;
+  padding-bottom: 1.25rem;
+}
+.timeline-item:last-child {
+  padding-bottom: 0;
+}
+/* Vertical line joining each event to the next */
+.timeline-item:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  left: calc(1rem - 1px);
+  top: 2rem;
+  bottom: 0;
+  width: 2px;
+  background-color: #dee2e6;
+}
+.timeline-icon {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.9rem;
+}
+
 /* ── Cards ── */
 .card {
   border-radius: 10px;

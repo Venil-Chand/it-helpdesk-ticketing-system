@@ -1,7 +1,10 @@
 
+import os
+import tempfile
 import unittest
 from unittest.mock import patch
 
+import database as db
 from app import app
 
 
@@ -19,6 +22,19 @@ class TestTicketOwnership(unittest.TestCase):
         app.config["WTF_CSRF_ENABLED"] = False
 
         self.client = app.test_client()
+
+        # Point the database at a folder that does not exist, so an
+        # unmocked query raises an error rather than reading real data
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+
+        db_guard = patch.object(
+            db,
+            "DB_PATH",
+            os.path.join(temp_dir.name, "missing", "helpdesk.db")
+        )
+        db_guard.start()
+        self.addCleanup(db_guard.stop)
 
         # Create sample tickets without using the real database
         self.alice_ticket = {
@@ -61,6 +77,9 @@ class TestTicketOwnership(unittest.TestCase):
             "app.db.get_comments",
             return_value=[]
         ), patch(
+            "app.db.get_ticket_history",
+            return_value=[]
+        ), patch(
             "app.db.get_all_usernames",
             return_value=[]
         ), patch(
@@ -79,11 +98,16 @@ class TestTicketOwnership(unittest.TestCase):
         with patch(
             "app.db.get_ticket",
             return_value=self.bob_ticket
-        ):
+        ), patch(
+            "app.db.get_ticket_history"
+        ) as mock_history:
 
             response = self.client.get("/tickets/2")
 
             self.assertEqual(response.status_code, 404)
+
+            # Bob's activity history is never even loaded for Alice
+            mock_history.assert_not_called()
 
     def test_technician_can_view_another_users_ticket(self):
         # Technicians can access tickets belonging to others
@@ -94,6 +118,9 @@ class TestTicketOwnership(unittest.TestCase):
             return_value=self.bob_ticket
         ), patch(
             "app.db.get_comments",
+            return_value=[]
+        ), patch(
+            "app.db.get_ticket_history",
             return_value=[]
         ), patch(
             "app.db.get_all_usernames",

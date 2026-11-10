@@ -600,14 +600,17 @@ def get_ticket_history(ticket_id):
 
     try:
         # id DESC orders events recorded in the same second, such as a
-        # status change and an assignment saved together
+        # status change and an assignment saved together.
+        # actor_role is the actor's current role, used only for display.
         return conn.execute(
             '''
-            SELECT id, ticket_id, actor, action, field_name,
-                   old_value, new_value, created_at
-            FROM ticket_history
-            WHERE ticket_id = ?
-            ORDER BY created_at DESC, id DESC
+            SELECT h.id, h.ticket_id, h.actor, h.action, h.field_name,
+                   h.old_value, h.new_value, h.created_at,
+                   u.role AS actor_role
+            FROM ticket_history AS h
+            LEFT JOIN users AS u ON u.username = h.actor
+            WHERE h.ticket_id = ?
+            ORDER BY h.created_at DESC, h.id DESC
             ''',
             (ticket_id,)
         ).fetchall()

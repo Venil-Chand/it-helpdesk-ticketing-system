@@ -195,13 +195,13 @@
     </div>
 
 
-    <!-- Notes and activity -->
+    <!-- Notes -->
     <div class="card shadow-sm border-0 mb-3">
 
       <div class="card-header fw-semibold bg-light">
 
         <i class="bi bi-chat-left-dots me-1"></i>
-        Notes &amp; Activity
+        Notes
 
         <span class="badge bg-secondary ms-1">
           {{ comments|length }}
@@ -296,6 +296,105 @@
       </div>
 
     </div>
+
+
+    <!-- ---------------------------------------------------
+         TICKET ACTIVITY HISTORY (newest first)
+         All values are auto-escaped by Jinja2, so text stored in
+         the database is always displayed, never run as HTML.
+    --------------------------------------------------- -->
+
+    {% set role_labels = {'admin': 'Administrator', 'technician': 'Technician'} %}
+
+    {% set event_style = {
+      'created': ('bi-plus-circle-fill', 'primary'),
+      'status_changed': ('bi-arrow-repeat', 'warning'),
+      'assigned': ('bi-person-check-fill', 'success'),
+      'reassigned': ('bi-people-fill', 'info'),
+      'unassigned': ('bi-person-dash-fill', 'secondary'),
+      'commented': ('bi-chat-left-text-fill', 'dark')
+    } %}
+
+    <section class="card shadow-sm border-0 mt-3"
+             aria-labelledby="activity-heading">
+
+      <div class="card-header fw-semibold bg-light">
+        <h2 id="activity-heading" class="h6 fw-semibold mb-0 d-inline">
+          <i class="bi bi-clock-history me-1" aria-hidden="true"></i>
+          Ticket Activity History
+        </h2>
+        <span class="badge bg-secondary ms-1">{{ history|length }}</span>
+        <small class="text-muted float-end fw-normal">Times shown in UTC</small>
+      </div>
+
+      <div class="card-body">
+
+        {% if history %}
+
+          <ol class="timeline list-unstyled mb-0"
+              aria-label="Ticket activity, newest first">
+
+            {% for e in history %}
+
+              {% set icon, colour = event_style.get(e['action'], ('bi-dot', 'secondary')) %}
+              {% set role = role_labels.get(e['actor_role'], '') %}
+
+              <li class="timeline-item">
+
+                <span class="timeline-icon text-bg-{{ colour }}">
+                  <i class="bi {{ icon }}" aria-hidden="true"></i>
+                </span>
+
+                <div class="d-flex flex-wrap justify-content-between gap-1">
+
+                  <p class="mb-0">
+                    {% if role %}{{ role }} {% endif %}<strong>{{ e['actor'] }}</strong>
+
+                    {% if e['action'] == 'created' %}
+                      created this ticket.
+                    {% elif e['action'] == 'status_changed' %}
+                      changed status from
+                      <span class="badge bg-{{ sc.get(e['old_value'], 'secondary') }}">{{ e['old_value'] }}</span>
+                      to
+                      <span class="badge bg-{{ sc.get(e['new_value'], 'secondary') }}">{{ e['new_value'] }}</span>.
+                    {% elif e['action'] == 'assigned' %}
+                      assigned this ticket to
+                      <strong>{{ e['new_value'] }}</strong>.
+                    {% elif e['action'] == 'reassigned' %}
+                      reassigned this ticket from
+                      <strong>{{ e['old_value'] }}</strong>
+                      to <strong>{{ e['new_value'] }}</strong>.
+                    {% elif e['action'] == 'unassigned' %}
+                      unassigned <strong>{{ e['old_value'] }}</strong>.
+                    {% elif e['action'] == 'commented' %}
+                      added a note.
+                    {% endif %}
+                  </p>
+
+                  <small class="text-muted text-nowrap">
+                    <time datetime="{{ e['created_at'] }}Z">{{ e['created_at'][:16] }} UTC</time>
+                  </small>
+
+                </div>
+
+              </li>
+
+            {% endfor %}
+
+          </ol>
+
+        {% else %}
+
+          <p class="text-muted text-center py-3 mb-0">
+            No activity recorded yet. History is kept for changes made
+            after activity tracking was introduced.
+          </p>
+
+        {% endif %}
+
+      </div>
+
+    </section>
 
   </div>
 

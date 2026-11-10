@@ -502,8 +502,11 @@ def ticket_detail(ticket_id):
 
         abort(404)
 
-    # Step 5: Retrieve comments
+    # Step 5: Retrieve comments and activity history.
+    # This runs only after the access check above, so history is
+    # protected by exactly the same rule as the ticket itself.
     comments = db.get_comments(ticket_id)
+    history = db.get_ticket_history(ticket_id)
 
     # Only support staff need the assignment list
     if is_tech_or_admin():
@@ -519,6 +522,7 @@ def ticket_detail(ticket_id):
         "ticket_detail.html",
         ticket=ticket,
         comments=comments,
+        history=history,
         statuses=STATUSES,
         all_users=all_users
     )
