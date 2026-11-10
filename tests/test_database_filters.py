@@ -83,9 +83,15 @@ class TestDatabaseFilters(unittest.TestCase):
     def test_user_query_without_username_returns_nothing(self):
         # A missing username must never widen the query to every ticket.
         # A ticket with no owner is included to prove NULL does not match.
-        db.create_ticket(
-            "Orphan ticket", "No owner recorded", "Low", None
+        # Inserted directly: create_ticket requires a real creator,
+        # because every ticket records who created it
+        conn = db.get_db()
+        conn.execute(
+            "INSERT INTO tickets (title, description, priority, created_by) "
+            "VALUES ('Orphan ticket', 'No owner recorded', 'Low', NULL)"
         )
+        conn.commit()
+        conn.close()
 
         tickets = db.get_tickets_by_user(None)
 

@@ -392,25 +392,28 @@ def get_ticket(ticket_id):
 # ---------------------------------------------------
 
 def create_ticket(title, description, priority, created_by):
-    """Create a new helpdesk ticket."""
+    """Create a new helpdesk ticket and record who created it."""
 
     conn = get_db()
 
     try:
-        cursor = conn.execute(
-            '''
-            INSERT INTO tickets
-            (title, description, priority, created_by)
-            VALUES (?, ?, ?, ?)
-            ''',
-            (title, description, priority, created_by)
-        )
+        # "with conn" commits both statements together on success, or
+        # rolls both back if either fails, so a ticket can never exist
+        # without its "created" event
+        with conn:
+            cursor = conn.execute(
+                '''
+                INSERT INTO tickets
+                (title, description, priority, created_by)
+                VALUES (?, ?, ?, ?)
+                ''',
+                (title, description, priority, created_by)
+            )
 
-        # Get the ID of the newly created ticket
-        ticket_id = cursor.lastrowid
+            # Get the ID of the newly created ticket
+            ticket_id = cursor.lastrowid
 
-        # Save the new ticket
-        conn.commit()
+            _record_event(conn, ticket_id, created_by, "created")
 
         return ticket_id
 
@@ -422,24 +425,80 @@ def create_ticket(title, description, priority, created_by):
 # UPDATE TICKET
 # ---------------------------------------------------
 
-def update_ticket(ticket_id, status, assigned_to):
-    """Update ticket status and technician assignment."""
+def update_ticket(ticket_id, status, assigned_to, *, actor):
+    """
+    Update ticket status and assignment, recording each real change.
+
+    actor must be the authenticated username, never a form value.
+
+    Returns a list of (action, field, old_value, new_value) tuples for
+    the changes made, an empty list if nothing changed, or None if the
+    ticket does not exist.
+    """
+
+    # Treat "" the same as "no technician"
+    assigned_to = assigned_to or None
 
     conn = get_db()
 
     try:
-        conn.execute(
-            '''
-            UPDATE tickets
-            SET status = ?,
-                assigned_to = ?,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-            ''',
-            (status, assigned_to, ticket_id)
-        )
+        with conn:
+            # Lock the database for writing before reading the old values,
+            # so a simultaneous update cannot change them in between
+            conn.execute("BEGIN IMMEDIATE")
 
-        conn.commit()
+            current = conn.execute(
+                "SELECT status, assigned_to FROM tickets WHERE id = ?",
+                (ticket_id,)
+            ).fetchone()
+
+            if current is None:
+                return None
+
+            changes = []
+
+            if status != current["status"]:
+                changes.append(
+                    ("status_changed", "status", current["status"], status)
+                )
+
+            old_assignee = current["assigned_to"] or None
+
+            if assigned_to != old_assignee:
+                if old_assignee is None:
+                    action = "assigned"
+                elif assigned_to is None:
+                    action = "unassigned"
+                else:
+                    action = "reassigned"
+
+                changes.append(
+                    (action, "assigned_to", old_assignee, assigned_to)
+                )
+
+            # Nothing changed: no update and no misleading history
+            if not changes:
+                return []
+
+            conn.execute(
+                '''
+                UPDATE tickets
+                SET status = ?,
+                    assigned_to = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                ''',
+                (status, assigned_to, ticket_id)
+            )
+
+            # Status and assignment are recorded as separate events
+            for action, field_name, old_value, new_value in changes:
+                _record_event(
+                    conn, ticket_id, actor, action,
+                    field_name, old_value, new_value
+                )
+
+        return changes
 
     finally:
         conn.close()
@@ -471,32 +530,87 @@ def get_comments(ticket_id):
 
 
 def add_comment(ticket_id, author, content):
-    """Add a comment to a helpdesk ticket."""
+    """Add a comment to a helpdesk ticket and record the activity."""
 
     conn = get_db()
 
     try:
-        # Insert a new comment
-        conn.execute(
-            '''
-            INSERT INTO comments (ticket_id, author, content)
-            VALUES (?, ?, ?)
-            ''',
-            (ticket_id, author, content)
-        )
+        # The comment, the timestamp update and the history event are
+        # saved together or not at all
+        with conn:
+            # Insert a new comment
+            conn.execute(
+                '''
+                INSERT INTO comments (ticket_id, author, content)
+                VALUES (?, ?, ?)
+                ''',
+                (ticket_id, author, content)
+            )
 
-        # Update the ticket's modification time
-        conn.execute(
+            # Update the ticket's modification time
+            conn.execute(
+                '''
+                UPDATE tickets
+                SET updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                ''',
+                (ticket_id,)
+            )
+
+            _record_event(conn, ticket_id, author, "commented")
+
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------
+# TICKET ACTIVITY HISTORY
+# ---------------------------------------------------
+
+def _record_event(
+    conn,
+    ticket_id,
+    actor,
+    action,
+    field_name=None,
+    old_value=None,
+    new_value=None
+):
+    """
+    Add one history event using the caller's open connection.
+
+    This deliberately never commits. The caller commits the ticket
+    change and its history event together in a single transaction.
+    """
+
+    conn.execute(
+        '''
+        INSERT INTO ticket_history
+        (ticket_id, actor, action, field_name, old_value, new_value)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ''',
+        (ticket_id, actor, action, field_name, old_value, new_value)
+    )
+
+
+def get_ticket_history(ticket_id):
+    """Retrieve a ticket's history events, newest first."""
+
+    conn = get_db()
+
+    try:
+        # id DESC orders events recorded in the same second, such as a
+        # status change and an assignment saved together
+        return conn.execute(
             '''
-            UPDATE tickets
-            SET updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
+            SELECT id, ticket_id, actor, action, field_name,
+                   old_value, new_value, created_at
+            FROM ticket_history
+            WHERE ticket_id = ?
+            ORDER BY created_at DESC, id DESC
             ''',
             (ticket_id,)
-        )
-
-        # Save the changes
-        conn.commit()
+        ).fetchall()
 
     finally:
         conn.close()

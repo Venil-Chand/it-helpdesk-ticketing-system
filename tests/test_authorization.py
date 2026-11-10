@@ -91,8 +91,9 @@ class TestAuthorization(unittest.TestCase):
 
             self.assertEqual(response.status_code, 302)
 
+            # The actor is the logged-in user from the session
             mock_update.assert_called_once_with(
-                1, "In Progress", "test_user"
+                1, "In Progress", "test_user", actor="test_user"
             )
 
     def test_admin_can_update_ticket(self):
@@ -114,7 +115,7 @@ class TestAuthorization(unittest.TestCase):
             self.assertEqual(response.status_code, 302)
 
             mock_update.assert_called_once_with(
-                1, "Resolved", "test_user"
+                1, "Resolved", "test_user", actor="test_user"
             )
 
 

@@ -573,17 +573,28 @@ def update_ticket(ticket_id):
 
     else:
 
-        # Update ticket information
-        db.update_ticket(
+        # Update the ticket and record each change in one transaction.
+        # The actor always comes from the login session, never the form.
+        changes = db.update_ticket(
             ticket_id,
             status,
-            assigned_to
+            assigned_to,
+            actor=session["username"]
         )
 
-        flash(
-            "Ticket updated.",
-            "success"
-        )
+        if changes is None:
+            abort(404)
+
+        if changes:
+            flash(
+                "Ticket updated.",
+                "success"
+            )
+        else:
+            flash(
+                "No changes to save.",
+                "info"
+            )
 
     return redirect(
         url_for(
