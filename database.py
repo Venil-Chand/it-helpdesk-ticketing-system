@@ -23,6 +23,9 @@ def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
 
+    # SQLite ignores FOREIGN KEY rules unless each connection enables them
+    conn.execute("PRAGMA foreign_keys = ON")
+
     return conn
 
 
@@ -89,6 +92,53 @@ def init_db():
     c.execute('''
         CREATE INDEX IF NOT EXISTS idx_tickets_date
         ON tickets (created_at DESC, id DESC)
+    ''')
+
+    # ---------------------------------------------------
+    # TICKET ACTIVITY HISTORY
+    # ---------------------------------------------------
+
+    # One ticket has many history events. created_at uses SQLite's
+    # CURRENT_TIMESTAMP, which is always UTC.
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS ticket_history (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticket_id  INTEGER NOT NULL,
+            actor      TEXT NOT NULL,
+            action     TEXT NOT NULL CHECK (action IN (
+                           'created', 'status_changed', 'assigned',
+                           'reassigned', 'unassigned', 'commented'
+                       )),
+            field_name TEXT,
+            old_value  TEXT,
+            new_value  TEXT,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (ticket_id) REFERENCES tickets(id)
+        )
+    ''')
+
+    # Fetch one ticket's events in order without sorting the table
+    c.execute('''
+        CREATE INDEX IF NOT EXISTS idx_ticket_history_ticket
+        ON ticket_history (ticket_id, created_at DESC, id DESC)
+    ''')
+
+    # History is append-only: the database refuses edits and deletions,
+    # so the application cannot silently rewrite what happened
+    c.execute('''
+        CREATE TRIGGER IF NOT EXISTS ticket_history_no_update
+        BEFORE UPDATE ON ticket_history
+        BEGIN
+            SELECT RAISE(ABORT, 'ticket history is append-only');
+        END
+    ''')
+
+    c.execute('''
+        CREATE TRIGGER IF NOT EXISTS ticket_history_no_delete
+        BEFORE DELETE ON ticket_history
+        BEGIN
+            SELECT RAISE(ABORT, 'ticket history is append-only');
+        END
     ''')
 
     # Save database changes
