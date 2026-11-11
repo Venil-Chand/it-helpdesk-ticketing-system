@@ -216,8 +216,20 @@
 
     </form>
 
-    <!-- New Ticket Button -->
-    <div class="ms-auto">
+    <!-- Export and New Ticket Buttons -->
+    <div class="ms-auto d-flex flex-wrap gap-2">
+
+        <!-- Downloads every matching ticket across all pages. The link
+             keeps the search and filters but never the page number. -->
+        <a
+            href="{{ url_for('export_tickets', **link_args) }}"
+            class="btn btn-outline-success btn-sm"
+            aria-label="Export matching tickets as CSV"
+            download
+        >
+            <i class="bi bi-download me-1" aria-hidden="true"></i>
+            Export CSV
+        </a>
 
         <a
             href="{{ url_for('new_ticket') }}"

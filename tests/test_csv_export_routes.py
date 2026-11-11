@@ -28,7 +28,8 @@ TICKET = {
 }
 
 
-class TestCsvExportRoute(unittest.TestCase):
+class CsvRouteTestCase(unittest.TestCase):
+    """Shared setup only; holds no tests of its own."""
 
     def setUp(self):
         self.old_testing = app.config["TESTING"]
@@ -52,6 +53,9 @@ class TestCsvExportRoute(unittest.TestCase):
         with self.client.session_transaction() as sess:
             sess["username"] = username
             sess["role"] = role
+
+
+class TestCsvExportRoute(CsvRouteTestCase):
 
     def export(self, url="/tickets/export", tickets=(TICKET,)):
         """Request the export with the database query mocked."""
@@ -197,6 +201,51 @@ class TestCsvExportRoute(unittest.TestCase):
         self.assertEqual(self.rows(response)[1][1], "'=1+1")
         self.assertIsNone(re.search(r"(^|,)=1\+1", response.get_data(
             as_text=True)))
+
+
+class TestExportButton(CsvRouteTestCase):
+    """The Export CSV button on the dashboard."""
+
+    def dashboard(self, url):
+        stats = {"total": 25, "open": 25, "in_progress": 0, "critical": 0}
+
+        with patch("app.db.count_tickets", return_value=25), \
+                patch("app.db.get_tickets_page", return_value=[TICKET]), \
+                patch("app.db.get_stats", return_value=stats):
+            response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        return response.get_data(as_text=True)
+
+    def export_href(self, html):
+        match = re.search(r'href="(/tickets/export[^"]*)"', html)
+        self.assertIsNotNone(match, "Export CSV link not found")
+        return match.group(1).replace("&amp;", "&")
+
+    def test_button_is_shown_on_the_dashboard(self):
+        self.login_as("alice", "user")
+
+        html = self.dashboard("/")
+
+        self.assertIn("Export CSV", html)
+        self.assertIn("bi-download", html)
+        self.assertEqual(self.export_href(html), "/tickets/export")
+
+    def test_link_keeps_filters_but_not_the_page(self):
+        self.login_as("alice", "user")
+
+        html = self.dashboard("/?q=printer&priority=High&page=2")
+
+        self.assertEqual(self.export_href(html),
+                         "/tickets/export?q=printer&priority=High")
+
+    def test_button_is_outside_the_filter_form(self):
+        self.login_as("alice", "user")
+
+        html = self.dashboard("/")
+        form_end = html.index("</form>", html.index('role="search"'))
+
+        self.assertGreater(html.index("/tickets/export"), form_end)
 
 
 if __name__ == "__main__":
