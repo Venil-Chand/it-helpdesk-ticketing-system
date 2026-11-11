@@ -15,9 +15,11 @@ User accounts are managed using setup_accounts.py.
 
 import math
 import os
+from datetime import datetime, timezone
 
 from flask import (
     Flask,
+    Response,
     render_template,
     request,
     redirect,
@@ -34,6 +36,7 @@ from werkzeug.security import check_password_hash
 from dotenv import load_dotenv
 
 import database as db
+from csv_export import build_tickets_csv
 
 
 # ---------------------------------------------------
@@ -300,6 +303,38 @@ def logout():
 
 
 # ---------------------------------------------------
+# SHARED TICKET FILTERS
+# ---------------------------------------------------
+
+def current_ticket_filters():
+    """
+    Read the search and filters from the URL, and ownership from the session.
+
+    The dashboard and the CSV export both use this, so they can never
+    disagree about which tickets a user may see. Ownership comes only
+    from the login session; URL parameters such as ?username= or ?role=
+    are never read.
+    """
+
+    # The maxlength attribute in the template is client-side only, so the
+    # limit is enforced again here for requests that bypass the browser.
+    search_query = request.args.get("q", "").strip()[:MAX_SEARCH_LENGTH]
+
+    # Staff (None) see all tickets; regular users see only their own
+    if is_tech_or_admin():
+        owner = None
+    else:
+        owner = session["username"]
+
+    return {
+        "search_text": search_query,
+        "username": owner,
+        "status_filter": request.args.get("status", "All"),
+        "priority_filter": request.args.get("priority", "All")
+    }
+
+
+# ---------------------------------------------------
 # DASHBOARD WITH SEARCH AND PAGINATION
 # ---------------------------------------------------
 
@@ -313,38 +348,15 @@ def index():
     if redir:
         return redir
 
-    # Read search text from the URL.
-    # The maxlength attribute in the template is client-side only, so the
-    # limit is enforced again here for requests that bypass the browser.
-    search_query = request.args.get(
-        "q", ""
-    ).strip()[:MAX_SEARCH_LENGTH]
+    filters = current_ticket_filters()
 
-    # Read existing dashboard filters
-    status_filter = request.args.get(
-        "status", "All"
-    )
-
-    priority_filter = request.args.get(
-        "priority", "All"
-    )
+    search_query = filters["search_text"]
+    status_filter = filters["status_filter"]
+    priority_filter = filters["priority_filter"]
+    owner = filters["username"]
 
     # Read the requested page; anything invalid becomes page 1
     page = parse_page(request.args.get("page"))
-
-    # Decide ownership once and reuse it for every query below.
-    # Staff (None) see all tickets; regular users see only their own.
-    if is_tech_or_admin():
-        owner = None
-    else:
-        owner = session["username"]
-
-    filters = {
-        "search_text": search_query,
-        "username": owner,
-        "status_filter": status_filter,
-        "priority_filter": priority_filter
-    }
 
     # Count matching tickets to find out how many pages exist
     total_tickets = db.count_tickets(**filters)
@@ -400,6 +412,44 @@ def index():
         search_query=search_query,
         pagination=pagination,
         link_args=link_args
+    )
+
+
+# ---------------------------------------------------
+# CSV EXPORT
+# ---------------------------------------------------
+
+@app.route("/tickets/export")
+def export_tickets():
+    """Download every ticket the user may see that matches the filters."""
+
+    redir = require_login()
+
+    if redir:
+        return redir
+
+    filters = current_ticket_filters()
+
+    # All matching tickets, not one dashboard page. Ownership is part of
+    # the SQL WHERE clause, so other users' tickets are never loaded.
+    tickets = db.search_tickets(**filters)
+
+    csv_text = build_tickets_csv(tickets)
+
+    # The filename is generated here, never taken from the request
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    filename = f"helpdesk-tickets-{timestamp}.csv"
+
+    return Response(
+        # utf-8-sig adds a byte order mark so Excel reads UTF-8 correctly
+        csv_text.encode("utf-8-sig"),
+        content_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            # Ticket data must not be kept by shared caches or proxies
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff"
+        }
     )
 
 
