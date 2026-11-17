@@ -3,6 +3,7 @@ import sqlite3
 import os
 
 import sla_storage
+from sla import is_qualifying_response
 
 
 # ---------------------------------------------------
@@ -560,17 +561,19 @@ def add_comment(ticket_id, author, content):
     conn = get_db()
 
     try:
-        # The comment, the timestamp update and the history event are
-        # saved together or not at all
+        # The comment, the timestamp update, the history event and any
+        # SLA first response are saved together or not at all
         with conn:
             # Insert a new comment
-            conn.execute(
+            cursor = conn.execute(
                 '''
                 INSERT INTO comments (ticket_id, author, content)
                 VALUES (?, ?, ?)
                 ''',
                 (ticket_id, author, content)
             )
+
+            comment_id = cursor.lastrowid
 
             # Update the ticket's modification time
             conn.execute(
@@ -584,8 +587,47 @@ def add_comment(ticket_id, author, content):
 
             _record_event(conn, ticket_id, author, "commented")
 
+            _record_sla_response(conn, comment_id)
+
     finally:
         conn.close()
+
+
+def _record_sla_response(conn, comment_id):
+    """
+    Record a comment as the ticket's first SLA response if it qualifies.
+
+    Uses the caller's open connection and never commits. The author's
+    role is read from the users table inside the same transaction, so
+    the decision never depends on a value supplied by the caller.
+
+    Returns True only if this comment became the first response.
+    """
+
+    row = conn.execute(
+        '''
+        SELECT c.ticket_id, c.author, c.created_at,
+               t.created_by, u.role
+        FROM comments AS c
+        JOIN tickets AS t ON t.id = c.ticket_id
+        LEFT JOIN users AS u ON u.username = c.author
+        WHERE c.id = ?
+        ''',
+        (comment_id,)
+    ).fetchone()
+
+    if row is None or not is_qualifying_response(
+        row["author"], row["role"], row["created_by"]
+    ):
+        return False
+
+    # Uses the comment's own stored time. Only the first qualifying
+    # response is kept, and tickets without an SLA row are left alone.
+    return sla_storage.record_first_response(
+        conn,
+        row["ticket_id"],
+        sla_storage.parse_stored_utc(row["created_at"])
+    )
 
 
 # ---------------------------------------------------

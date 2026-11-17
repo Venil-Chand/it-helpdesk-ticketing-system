@@ -12,6 +12,24 @@ SLA_TARGETS = {
 
 ALERT_WINDOW = timedelta(minutes=30)
 
+# Support staff roles whose comments count as a response
+RESPONDER_ROLES = frozenset({"technician", "admin"})
+
+
+def is_qualifying_response(author, author_role, ticket_created_by):
+    """
+    Return True if a comment counts as the ticket's first response.
+
+    Only support staff replying on someone else's ticket qualify. A
+    requester commenting on their own ticket never stops the SLA clock,
+    even when that requester is a technician or administrator.
+    """
+
+    return (
+        author_role in RESPONDER_ROLES
+        and author != ticket_created_by
+    )
+
 
 def require_aware_datetime(value, name):
     """Reject timestamps without timezone information."""
