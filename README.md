@@ -1,6 +1,9 @@
 
 # IT Helpdesk Ticketing System
 
+[![Python Helpdesk CI](https://github.com/Venil-Chand/it-helpdesk-ticketing-system/actions/workflows/python-ci.yml/badge.svg?branch=main)](https://github.com/Venil-Chand/it-helpdesk-ticketing-system/actions/workflows/python-ci.yml)
+
+
 A Python and Flask web application for managing IT support requests.
 
 Built as a portfolio and practical learning project by Venil Chand, a computing student based in Auckland, New Zealand.
