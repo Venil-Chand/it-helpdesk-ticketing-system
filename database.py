@@ -2,6 +2,8 @@
 import sqlite3
 import os
 
+import sla_storage
+
 
 # ---------------------------------------------------
 # DATABASE CONFIGURATION
@@ -140,6 +142,14 @@ def init_db():
             SELECT RAISE(ABORT, 'ticket history is append-only');
         END
     ''')
+
+    # ---------------------------------------------------
+    # RESPONSE SLA
+    # ---------------------------------------------------
+
+    # One SLA row per ticket. Tickets created before SLA tracking
+    # have no row and are shown without an SLA.
+    sla_storage.initialize_sla_schema(conn)
 
     # Save database changes
     conn.commit()
@@ -397,9 +407,9 @@ def create_ticket(title, description, priority, created_by):
     conn = get_db()
 
     try:
-        # "with conn" commits both statements together on success, or
-        # rolls both back if either fails, so a ticket can never exist
-        # without its "created" event
+        # "with conn" commits every statement together on success, or
+        # rolls them all back if any fails, so a ticket can never exist
+        # without its "created" event or its SLA deadline
         with conn:
             cursor = conn.execute(
                 '''
@@ -414,6 +424,21 @@ def create_ticket(title, description, priority, created_by):
             ticket_id = cursor.lastrowid
 
             _record_event(conn, ticket_id, created_by, "created")
+
+            # Base the deadline on the creation time SQLite stored, so
+            # the SLA and the ticket can never disagree about it. An
+            # unknown priority raises ValueError and nothing is saved.
+            stored = conn.execute(
+                "SELECT priority, created_at FROM tickets WHERE id = ?",
+                (ticket_id,)
+            ).fetchone()
+
+            sla_storage.create_ticket_sla(
+                conn,
+                ticket_id,
+                stored["priority"],
+                sla_storage.parse_stored_utc(stored["created_at"])
+            )
 
         return ticket_id
 
