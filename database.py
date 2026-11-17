@@ -1,9 +1,13 @@
 
+import logging
 import sqlite3
 import os
 
 import sla_storage
 from sla import is_qualifying_response
+
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------
@@ -628,6 +632,35 @@ def _record_sla_response(conn, comment_id):
         row["ticket_id"],
         sla_storage.parse_stored_utc(row["created_at"])
     )
+
+
+# ---------------------------------------------------
+# RESPONSE SLA
+# ---------------------------------------------------
+
+def get_ticket_sla_status(ticket_id, now=None):
+    """
+    Retrieve a ticket's response SLA and its current status.
+
+    Returns None if the ticket has no SLA (created before SLA tracking)
+    or if its stored SLA values cannot be read. A damaged row is logged
+    rather than allowed to break the ticket page.
+    """
+
+    conn = get_db()
+
+    try:
+        return sla_storage.get_ticket_sla_status(conn, ticket_id, now=now)
+
+    except (TypeError, ValueError):
+        logger.warning(
+            "Unreadable SLA record for ticket %s", ticket_id,
+            exc_info=True
+        )
+        return None
+
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------

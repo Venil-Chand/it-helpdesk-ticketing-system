@@ -60,6 +60,34 @@
 
         </div>
 
+        <!-- Response SLA: hidden for tickets created before SLA tracking -->
+        {% if sla %}
+        {% set slac = {'Within SLA':'success', 'Due Soon':'warning', 'Overdue':'danger', 'Met':'success', 'Breached':'danger'} %}
+
+        <div class="mb-3" data-testid="response-sla">
+          <p class="mb-1 text-muted small">
+            Response SLA
+          </p>
+
+          <span class="badge bg-{{ slac.get(sla['status'], 'secondary') }}">
+            <i class="bi bi-stopwatch me-1" aria-hidden="true"></i>
+            {{ sla['status'] }}
+          </span>
+
+          <div class="small text-muted mt-1">
+            Due
+            <time datetime="{{ sla['response_due_at'] }}">{{ sla['response_due_at'][:16]|replace('T', ' ') }} UTC</time>
+          </div>
+
+          {% if sla['first_response_at'] %}
+          <div class="small text-muted">
+            First response
+            <time datetime="{{ sla['first_response_at'] }}">{{ sla['first_response_at'][:16]|replace('T', ' ') }} UTC</time>
+          </div>
+          {% endif %}
+        </div>
+        {% endif %}
+
         <p class="mb-1 text-muted small">
           Assigned to
         </p>
