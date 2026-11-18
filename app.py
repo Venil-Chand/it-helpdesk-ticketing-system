@@ -37,6 +37,7 @@ from dotenv import load_dotenv
 
 import database as db
 from csv_export import build_tickets_csv
+from sla_storage import parse_stored_utc
 
 
 # ---------------------------------------------------
@@ -100,6 +101,41 @@ MAX_SEARCH_LENGTH = 100
 
 # Number of tickets shown on each dashboard page
 TICKETS_PER_PAGE = 10
+
+# SLA filter values accepted in the URL (?sla=overdue), mapped to the
+# status labels the database query produces. This dictionary is an allow
+# list: any other ?sla= value is ignored, so it can never reach the SQL.
+SLA_FILTERS = {
+    "within": "Within SLA",
+    "due_soon": "Due Soon",
+    "overdue": "Overdue",
+    "met": "Met",
+    "breached": "Breached",
+    "not_tracked": "Not Tracked",
+}
+
+# The reverse lookup, label -> URL value, for building links
+SLA_FILTER_KEYS = {label: key for key, label in SLA_FILTERS.items()}
+
+
+# ---------------------------------------------------
+# TEMPLATE FILTERS
+# ---------------------------------------------------
+
+@app.template_filter("utc_time")
+def format_utc_time(value):
+    """
+    Show a stored timestamp as "YYYY-MM-DD HH:MM UTC".
+
+    The text is converted to UTC first, so a value stored with an offset
+    such as "+05:30" is never mislabelled. Unreadable values are shown
+    as they are (Jinja still escapes them) instead of breaking the page.
+    """
+
+    try:
+        return parse_stored_utc(value).strftime("%Y-%m-%d %H:%M UTC")
+    except (TypeError, ValueError):
+        return value or ""
 
 
 # ---------------------------------------------------
@@ -326,11 +362,15 @@ def current_ticket_filters():
     else:
         owner = session["username"]
 
+    # Unknown or missing ?sla= values mean "no SLA filter"
+    sla_filter = SLA_FILTERS.get(request.args.get("sla", ""), "All")
+
     return {
         "search_text": search_query,
         "username": owner,
         "status_filter": request.args.get("status", "All"),
-        "priority_filter": request.args.get("priority", "All")
+        "priority_filter": request.args.get("priority", "All"),
+        "sla_filter": sla_filter
     }
 
 
@@ -353,13 +393,20 @@ def index():
     search_query = filters["search_text"]
     status_filter = filters["status_filter"]
     priority_filter = filters["priority_filter"]
+    sla_filter = filters["sla_filter"]
     owner = filters["username"]
+
+    # One moment in UTC for the whole request. The SLA cards, the SLA
+    # filter, the page count and every row's SLA badge are all evaluated
+    # at this same time, so they can never disagree with each other.
+    now = datetime.now(timezone.utc)
 
     # Read the requested page; anything invalid becomes page 1
     page = parse_page(request.args.get("page"))
 
-    # Count matching tickets to find out how many pages exist
-    total_tickets = db.count_tickets(**filters)
+    # Count matching tickets to find out how many pages exist.
+    # The SLA filter is part of the count, so it runs before pagination.
+    total_tickets = db.count_tickets(**filters, now=now)
 
     pagination = build_pagination(
         page,
@@ -380,6 +427,9 @@ def index():
     if priority_filter != "All":
         link_args["priority"] = priority_filter
 
+    if sla_filter != "All":
+        link_args["sla"] = SLA_FILTER_KEYS[sla_filter]
+
     # A page past the end (old bookmark, edited URL) goes to the last page
     if page > pagination["total_pages"]:
         return redirect(
@@ -390,28 +440,35 @@ def index():
             )
         )
 
-    # Read only the tickets shown on this page
+    # Read only the tickets shown on this page, each with its SLA status
+    # from the same joined query (no extra query per ticket)
     tickets = db.get_tickets_page(
         **filters,
         page=page,
-        per_page=TICKETS_PER_PAGE
+        per_page=TICKETS_PER_PAGE,
+        now=now
     )
 
     # Statistics cover every ticket the user may see, not just this page
     stats = db.get_stats(username=owner)
+    sla_stats = db.get_sla_stats(username=owner, now=now)
 
     # Display the dashboard
     return render_template(
         "index.html",
         tickets=tickets,
         stats=stats,
+        sla_stats=sla_stats,
         status_filter=status_filter,
         priority_filter=priority_filter,
+        sla_filter=sla_filter,
         statuses=["All"] + STATUSES,
         priorities=["All"] + PRIORITIES,
+        sla_filters=SLA_FILTERS,
         search_query=search_query,
         pagination=pagination,
-        link_args=link_args
+        link_args=link_args,
+        evaluated_at=now
     )
 
 
@@ -430,14 +487,19 @@ def export_tickets():
 
     filters = current_ticket_filters()
 
+    # One UTC moment for the SLA filter and the filename timestamp
+    now = datetime.now(timezone.utc)
+
     # All matching tickets, not one dashboard page. Ownership is part of
     # the SQL WHERE clause, so other users' tickets are never loaded.
-    tickets = db.search_tickets(**filters)
+    # An ?sla= filter selects which tickets are exported, evaluated at
+    # `now`; the CSV columns stay exactly the same.
+    tickets = db.search_tickets(**filters, now=now)
 
     csv_text = build_tickets_csv(tickets)
 
     # The filename is generated here, never taken from the request
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    timestamp = now.strftime("%Y%m%d-%H%M%S")
     filename = f"helpdesk-tickets-{timestamp}.csv"
 
     return Response(

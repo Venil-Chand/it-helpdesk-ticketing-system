@@ -44,6 +44,37 @@ main.container-fluid {
   background-color: #e8f0fe;
 }
 
+/* ── Response SLA summary cards ── */
+.sla-num {
+  font-size: 1.4rem;
+  font-weight: 700;
+  line-height: 1.1;
+}
+.sla-card:focus-visible {
+  outline: 3px solid var(--bs-primary);
+  outline-offset: 2px;
+}
+/* The selected SLA filter: an outline, not just a colour change */
+.sla-card-active {
+  box-shadow: inset 0 0 0 2px var(--bs-primary) !important;
+}
+
+/* ── Ticket rows needing attention ──
+   A coloured bar on the left edge plus a light tint. The SLA badge
+   text in the row says the same thing for anyone who cannot see colour. */
+.sla-row-overdue > td {
+  background-color: rgba(var(--bs-danger-rgb), 0.07);
+}
+.sla-row-overdue > td:first-child {
+  box-shadow: inset 4px 0 0 var(--bs-danger);
+}
+.sla-row-due-soon > td {
+  background-color: rgba(var(--bs-warning-rgb), 0.10);
+}
+.sla-row-due-soon > td:first-child {
+  box-shadow: inset 4px 0 0 var(--bs-warning);
+}
+
 /* ── Comment entries ── */
 .comment-entry {
   transition: background-color 0.1s;

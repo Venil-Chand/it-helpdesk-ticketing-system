@@ -157,6 +157,15 @@ class TestDashboardPaginationRoute(unittest.TestCase):
         db_guard.start()
         self.addCleanup(db_guard.stop)
 
+        # The dashboard also reads SLA statistics; mock them too so the
+        # database is never queried
+        sla_stats_patch = patch(
+            "app.db.get_sla_stats",
+            return_value=dict.fromkeys(db.SLA_STATUS_LABELS, 0)
+        )
+        sla_stats_patch.start()
+        self.addCleanup(sla_stats_patch.stop)
+
         self.ticket = {
             "id": 7,
             "title": "Printer not working",
@@ -283,8 +292,12 @@ class TestDashboardPaginationRoute(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
 
-        # Every pagination link starts with "/?"; other links do not
-        hrefs = [unescape(h) for h in re.findall(r'href="(/\?[^"]*)"', html)]
+        # Only links inside the pagination <nav> are page links. (The SLA
+        # summary cards also link to "/?sla=...", outside the nav.)
+        nav = re.search(
+            r'<nav aria-label="Ticket pages">.*?</nav>', html, re.S
+        ).group(0)
+        hrefs = [unescape(h) for h in re.findall(r'href="(/\?[^"]*)"', nav)]
         linked = {
             int(parse_qs(urlparse(h).query)["page"][0]) for h in hrefs
         }

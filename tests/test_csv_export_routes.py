@@ -14,7 +14,7 @@ import os
 import re
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import database as db
 from app import app
@@ -45,6 +45,15 @@ class CsvRouteTestCase(unittest.TestCase):
         )
         db_guard.start()
         self.addCleanup(db_guard.stop)
+
+        # The dashboard also reads SLA statistics; mock them too so the
+        # database is never queried
+        sla_stats_patch = patch(
+            "app.db.get_sla_stats",
+            return_value=dict.fromkeys(db.SLA_STATUS_LABELS, 0)
+        )
+        sla_stats_patch.start()
+        self.addCleanup(sla_stats_patch.stop)
 
     def tearDown(self):
         app.config["TESTING"] = self.old_testing
@@ -95,7 +104,8 @@ class TestCsvExportRoute(CsvRouteTestCase):
         self.assertEqual(response.status_code, 200)
         mock_search.assert_called_once_with(
             search_text="", username="alice",
-            status_filter="All", priority_filter="All"
+            status_filter="All", priority_filter="All",
+            sla_filter="All", now=ANY
         )
 
     def test_staff_export_is_not_restricted(self):
@@ -129,7 +139,8 @@ class TestCsvExportRoute(CsvRouteTestCase):
 
         mock_search.assert_called_once_with(
             search_text="printer", username="alice",
-            status_filter="Open", priority_filter="High"
+            status_filter="Open", priority_filter="High",
+            sla_filter="All", now=ANY
         )
 
     def test_overlong_search_is_truncated_like_the_dashboard(self):

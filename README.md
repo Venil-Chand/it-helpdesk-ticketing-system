@@ -38,12 +38,16 @@ The project demonstrates Python programming, web development, relational databas
 - **Ticket search** — search tickets by title or description, combined with filters
 - **Ticket filtering** — filter tickets by status and priority
 - **Dashboard pagination** — 10 tickets per page with numbered navigation that keeps the search and filters
+- **Response SLA tracking** — every new ticket gets a response deadline based on its priority; the first qualifying staff response is recorded
+- **SLA monitoring dashboard** — summary cards for Within SLA, Due Soon, Overdue, Met, Breached and Not Tracked, an SLA column on every ticket row, and an SLA status filter
+- **CSV export** — download every ticket matching the current search and filters, with spreadsheet formula injection neutralised
+- **Ticket activity history** — an append-only timeline of creation, status, assignment and comment events
 - **Ticket details** — view descriptions, updates and comments
 - **Ticket management** — update status and technician assignment
 - **Comments** — add notes to existing tickets
 - **Account setup** — create the first administrator using a terminal script
 - **Password changes** — verify the current password before changing it
-- **Automated tests** — 108 tests covering authentication, authorization, CSRF, search and pagination
+- **Automated tests** — 349 tests covering authentication, authorization, CSRF, search, pagination, CSV export, history and SLA monitoring
 
 ---
 
@@ -181,6 +185,9 @@ This local script is not a replacement for production-grade account administrati
 it-helpdesk-ticketing-system/
 ├── app.py
 ├── database.py
+├── sla.py
+├── sla_storage.py
+├── csv_export.py
 ├── setup_accounts.py
 ├── migrate.py
 ├── requirements.txt
@@ -199,6 +206,9 @@ it-helpdesk-ticketing-system/
 │   ├── test_pagination_route.py
 │   ├── test_rate_limit.py
 │   ├── test_search_route.py
+│   ├── test_sla_dashboard_db.py
+│   ├── test_sla_dashboard_routes.py
+│   ├── ...                      (SLA, CSV and history tests)
 │   ├── test_ticket_ownership.py
 │   └── test_ticket_search.py
 ├── templates/
@@ -216,10 +226,13 @@ it-helpdesk-ticketing-system/
 | File | Purpose |
 |---|---|
 | `app.py` | Flask application, routes and login logic |
-| `database.py` | SQLite tables, queries and ticket functions |
+| `database.py` | SQLite tables, queries and ticket functions, including the SLA dashboard queries |
+| `sla.py` | Response SLA policy: deadlines per priority and status rules |
+| `sla_storage.py` | Stores SLA deadlines and first responses; reads stored UTC timestamps |
+| `csv_export.py` | Builds safe CSV files from ticket rows |
 | `setup_accounts.py` | Initial administrator setup and password changes |
 | `migrate.py` | Migration from an earlier database structure |
-| `tests/` | 108 automated tests covering auth, CSRF, ownership, search and pagination |
+| `tests/` | 349 automated tests covering auth, CSRF, ownership, search, pagination, CSV export, history and SLA |
 
 The local `helpdesk.db` database and `.env` file are excluded from version control.
 
@@ -348,13 +361,82 @@ The ownership restriction is applied **before** pagination, inside the SQL `WHER
 - the total in *Showing 1–10 of N* counts only their tickets, so it does not reveal how many tickets other users have
 - a page number that would only exist for staff redirects to the user's own last page
 
-Adding parameters such as `?username=bob`, `?role=admin` or `?per_page=1000` has no effect. The route reads only `q`, `status`, `priority` and `page`. The user's identity and role come from the signed session cookie, which cannot be altered without the secret key, and never from the URL.
+Adding parameters such as `?username=bob`, `?role=admin` or `?per_page=1000` has no effect. The route reads only `q`, `status`, `priority`, `sla` and `page`. The user's identity and role come from the signed session cookie, which cannot be altered without the secret key, and never from the URL.
+
+---
+
+## SLA Monitoring Dashboard
+
+The dashboard shows how every ticket you may see is doing against its **response SLA**: the time allowed for a technician or administrator to first reply.
+
+### Response SLA policy
+
+When a ticket is created, a response deadline is stored for it in the `ticket_sla` table:
+
+| Priority | Response target |
+|---|---|
+| Critical | 1 hour |
+| High | 4 hours |
+| Medium | 24 hours |
+| Low | 72 hours |
+
+Targets are calendar hours (policy `calendar-hours-v1`). The first comment from a technician or administrator on **someone else's** ticket is recorded as the first response. A requester's own comments never stop the clock.
+
+### SLA statuses
+
+| Status | Meaning |
+|---|---|
+| Within SLA | No response yet, more than 30 minutes left |
+| Due Soon | No response yet, 30 minutes or less left |
+| Overdue | No response yet, deadline reached or passed |
+| Met | First response at or before the deadline |
+| Breached | First response after the deadline |
+| Not Tracked | Ticket created before SLA tracking, or its SLA data cannot be read |
+
+The boundaries are exact: a ticket with no response is **Overdue** at the deadline itself, and a response **at** the deadline is **Met**.
+
+Not Tracked tickets are never counted as overdue. The status depends only on the first response, not on the ticket's Open/Closed status. This is the existing SLA policy, which the dashboard does not change.
+
+### Using the SLA dashboard
+
+- **Summary cards** count tickets in each status across everything you may see, not just the current page or search. They show the UTC time they were calculated at.
+- **Click a card**, or use the **SLA** select next to the status and priority filters, to list only tickets in that status. Search, status, priority and pagination all keep working with it.
+- The **Response SLA** column shows each ticket's status, deadline and first response time, in UTC. Overdue rows have a red edge and due-soon rows an amber one, and the status is always written out, so colour is never the only signal.
+- **Export CSV** exports the tickets matching the current filters, including the SLA filter. The CSV columns are unchanged.
+
+The SLA filter is in the URL, for example `/?sla=overdue&priority=High&page=2`. Accepted values are `within`, `due_soon`, `overdue`, `met`, `breached` and `not_tracked`. Any other value is ignored.
+
+### How the SLA dashboard works
+
+1. The route takes **one UTC timestamp** (`now`) per request and passes it to every query, so the cards, the filter, the page total and each row agree.
+2. `database.py` turns the SLA rules into one SQL `CASE` expression, joined to the tickets with `LEFT JOIN ticket_sla`. Tickets without an SLA row become Not Tracked.
+3. The SLA filter is part of the SQL `WHERE` clause, so it runs **before** `LIMIT`/`OFFSET`, and the count uses the same filter.
+4. The summary cards come from one `GROUP BY` query. Only six numbers reach Python.
+5. The ticket page still uses the original Python SLA code. Tests check that the SQL and Python give the same status for every stored timestamp format and boundary.
+
+### Database performance
+
+`EXPLAIN QUERY PLAN` shows the dashboard queries use the existing indexes:
+
+- staff pages read tickets in order from `idx_tickets_date`; regular users' from `idx_tickets_owner_date`
+- each ticket's SLA row is found by primary key (`ticket_sla.ticket_id`), so there is no extra query per ticket and no scan of `ticket_sla`
+- the page order comes straight from the index, with no sorting step
+
+No new index was added. An SLA status depends on the current time, so it cannot be stored in an index. Filtering by SLA status therefore checks each permitted ticket inside SQLite. That is fine at helpdesk scale.
+
+### Stored timestamps
+
+SQLite's `julianday()` reads stored times the same way `sla_storage.parse_stored_utc()` does: text without an offset (like SQLite's `CURRENT_TIMESTAMP`) is UTC, and text with `+05:30`, `-05:00` or `Z` is converted to UTC. Values that are not date-time text, such as `"2461000"` or `"now"`, are refused. The ticket page then shows no SLA and the dashboard shows Not Tracked.
+
+### SLA and ticket ownership
+
+The SLA cards, rows and filter use exactly the same ownership rule as the ticket list. Regular users get counts and deadlines for their own tickets only; technicians and administrators see every ticket. The `?sla=` value is checked against a fixed allow list before it reaches the database. Adding `?username=` or `?role=` still has no effect.
 
 ---
 
 ## Automated Testing
 
-The project includes 108 automated tests using Python's built-in `unittest` framework.
+The project includes 349 automated tests using Python's built-in `unittest` framework.
 
 To run the full suite:
 
@@ -385,6 +467,18 @@ python -m unittest tests.test_search_route -v
 | `test_pagination_db.py` | 18 | `LIMIT`/`OFFSET` queries, ordering, page size limits and the index |
 | `test_pagination_route.py` | 24 | Page parsing, page maths, page-number window and links |
 | `test_pagination_integration.py` | 18 | Full requests with no mocks: navigation, filters and ownership |
+| `test_csv_export.py` | 15 | CSV formatting and formula-injection protection |
+| `test_csv_export_routes.py` | 15 | Export route: access, filters and response headers |
+| `test_csv_export_integration.py` | 15 | Full export requests against a temporary database |
+| `test_ticket_history.py` | 30 | Transactional, append-only history recording |
+| `test_ticket_history_routes.py` | 16 | History shown only to users who may view the ticket |
+| `test_ticket_history_view.py` | 6 | Timeline rendering |
+| `test_sla.py` | 13 | Deadline calculation and SLA status rules |
+| `test_sla_lifecycle.py` | 8 | Storing deadlines and first responses |
+| `test_sla_status.py` | 6 | SLA status lookup and UTC parsing |
+| `test_sla_integration.py` | 44 | SLA creation, first responses, rollback and the ticket page |
+| `test_sla_dashboard_db.py` | 36 | SLA classification in SQL, boundaries, stored formats, counts, filters, pagination and query plans |
+| `test_sla_dashboard_routes.py` | 37 | Full dashboard requests: cards, filters, pagination, ownership, malicious input and CSV export |
 
 Tests never touch the real `helpdesk.db`:
 
@@ -411,10 +505,11 @@ Coverage is still not exhaustive. Load testing, concurrency testing and automate
 | Ticket ownership authorization | Implemented and enforced in SQL |
 | Search ownership restrictions | Implemented and tested |
 | Pagination ownership restrictions | Applied before paging; counts and pages tested |
+| SLA dashboard restrictions | SLA counts, rows and filters use the same ownership rule; tested |
 | HTTPS | Not configured |
 | Debug mode | Disabled (`debug=False`) |
 | Web-based account administration | Not implemented |
-| Automated security testing | 108 tests covering auth, CSRF, ownership, search and pagination |
+| Automated security testing | 349 tests covering auth, CSRF, ownership, search, pagination, export, history and SLA |
 
 Existing databases may still contain old demonstration credentials. Those passwords must be changed before relying on the updated authentication process.
 
@@ -425,6 +520,7 @@ Security improvements are ongoing.
 ## Current Limitations
 
 - No email notifications
+- No automatic SLA alerts; overdue tickets are visible only on the dashboard
 - No file attachments
 - No web-based password change form
 - No administrative user management interface

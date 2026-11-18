@@ -91,6 +91,76 @@
 
 
 <!-- ------------------------------------------------ -->
+<!-- RESPONSE SLA SUMMARY -->
+<!-- ------------------------------------------------ -->
+
+{# Colour and icon for each SLA status. The text label is always shown
+   too, so the status never depends on colour alone. #}
+{% set sla_styles = {
+    'Within SLA':  ('success',   'bi-check-circle'),
+    'Due Soon':    ('warning',   'bi-hourglass-split'),
+    'Overdue':     ('danger',    'bi-exclamation-octagon-fill'),
+    'Met':         ('success',   'bi-check2-all'),
+    'Breached':    ('danger',    'bi-x-octagon'),
+    'Not Tracked': ('secondary', 'bi-dash-circle')
+} %}
+
+{% set active_sla = sla_filter|default('All') %}
+
+<section class="mb-4" aria-labelledby="sla-summary-heading" data-testid="sla-summary">
+
+    <div class="d-flex flex-wrap align-items-baseline gap-2 mb-2">
+        <h2 id="sla-summary-heading" class="h6 fw-bold mb-0">
+            <i class="bi bi-stopwatch me-1" aria-hidden="true"></i>
+            Response SLA
+        </h2>
+
+        {% if evaluated_at is defined %}
+            <span class="text-muted small">
+                as of
+                <time datetime="{{ evaluated_at.isoformat(timespec='seconds') }}">
+                    {{ evaluated_at.strftime('%Y-%m-%d %H:%M') }} UTC
+                </time>
+            </span>
+        {% endif %}
+    </div>
+
+    <!-- Each card counts every ticket you may see, and links to a
+         filtered list that keeps the current search and filters -->
+    <div class="row g-2">
+
+        {% for key, label in (sla_filters|default({})).items() %}
+
+            {% set style = sla_styles[label] %}
+            {% set count = (sla_stats|default({})).get(label, 0) %}
+            {% set is_active = active_sla == label %}
+
+            <div class="col-6 col-md-4 col-xl-2">
+                <a
+                    href="{{ url_for('index', **dict(link_args|default({}), sla=key)) }}"
+                    class="card sla-card stat-card border-0 shadow-sm h-100 text-decoration-none{% if is_active %} sla-card-active{% endif %}"
+                    data-sla-card="{{ key }}"
+                    aria-label="{{ label }}: {{ count }} ticket{{ 's' if count != 1 else '' }}. Show only these tickets."
+                    {% if is_active %}aria-current="true"{% endif %}
+                >
+                    <div class="card-body py-2 px-3 d-flex align-items-center gap-2">
+                        <i class="bi {{ style[1] }} text-{{ style[0] }} fs-4" aria-hidden="true"></i>
+                        <div>
+                            <div class="sla-num text-body">{{ count }}</div>
+                            <div class="stat-label mt-0">{{ label }}</div>
+                        </div>
+                    </div>
+                </a>
+            </div>
+
+        {% endfor %}
+
+    </div>
+
+</section>
+
+
+<!-- ------------------------------------------------ -->
 <!-- TICKET SEARCH, FILTERS AND NEW TICKET BUTTON -->
 <!-- ------------------------------------------------ -->
 
@@ -190,6 +260,39 @@
 
         </select>
 
+        <!-- SLA Status Filter. Values come from the server's allow list;
+             the empty value means "all SLA statuses". -->
+        <label for="sla-filter" class="visually-hidden">
+            Filter by response SLA status
+        </label>
+
+        <select
+            id="sla-filter"
+            name="sla"
+            class="form-select form-select-sm"
+            style="width:auto;"
+            onchange="this.form.submit()"
+        >
+
+            <option value="" {% if active_sla == 'All' %}selected{% endif %}>
+                All SLA
+            </option>
+
+            {% for key, label in (sla_filters|default({})).items() %}
+
+                <option
+                    value="{{ key }}"
+                    {% if label == active_sla %}
+                        selected
+                    {% endif %}
+                >
+                    {{ label }}
+                </option>
+
+            {% endfor %}
+
+        </select>
+
         <!-- Search Button -->
         <button
             type="submit"
@@ -202,7 +305,8 @@
         <!-- Clear Search and Filters -->
         {% if search_query|default('')
               or status_filter != 'All'
-              or priority_filter != 'All' %}
+              or priority_filter != 'All'
+              or active_sla != 'All' %}
 
             <a
                 href="{{ url_for('index') }}"
@@ -261,6 +365,7 @@
                     <th>Title</th>
                     <th>Priority</th>
                     <th>Status</th>
+                    <th>Response SLA</th>
                     <th>Assigned To</th>
                     <th>Raised By</th>
                     <th>Created</th>
@@ -272,7 +377,9 @@
 
                 {% for t in tickets %}
 
-                    <tr class="ticket-row">
+                    {% set row_sla = t['sla_status'] %}
+
+                    <tr class="ticket-row{% if row_sla == 'Overdue' %} sla-row-overdue{% elif row_sla == 'Due Soon' %} sla-row-due-soon{% endif %}">
 
                         <!-- Ticket ID -->
                         <td>
@@ -320,6 +427,46 @@
                             <span class="badge bg-{{ sc[t['status']] }}">
                                 {{ t['status'] }}
                             </span>
+
+                        </td>
+
+                        <!-- Response SLA, from the same query as the row -->
+                        <td class="sla-cell" data-sla-status="{{ row_sla or '' }}">
+
+                            {% if row_sla in sla_styles %}
+
+                                {% set style = sla_styles[row_sla] %}
+
+                                <span class="badge text-bg-{{ style[0] }}">
+                                    <i class="bi {{ style[1] }} me-1" aria-hidden="true"></i>
+                                    {{ row_sla }}
+                                </span>
+
+                                {% if row_sla != 'Not Tracked' %}
+
+                                    <div class="small text-muted text-nowrap mt-1">
+                                        Due
+                                        <time datetime="{{ t['sla_response_due_at'] }}">
+                                            {{ t['sla_response_due_at']|utc_time }}
+                                        </time>
+                                    </div>
+
+                                    {% if t['sla_first_response_at'] %}
+                                        <div class="small text-muted text-nowrap">
+                                            Responded
+                                            <time datetime="{{ t['sla_first_response_at'] }}">
+                                                {{ t['sla_first_response_at']|utc_time }}
+                                            </time>
+                                        </div>
+                                    {% endif %}
+
+                                {% endif %}
+
+                            {% else %}
+
+                                <span class="text-muted">—</span>
+
+                            {% endif %}
 
                         </td>
 
@@ -471,6 +618,21 @@
                 class="btn btn-outline-primary btn-sm"
             >
                 Clear Search
+            </a>
+
+        {% elif status_filter != 'All'
+              or priority_filter != 'All'
+              or active_sla != 'All' %}
+
+            <p class="mb-2">
+                No tickets match the selected filters.
+            </p>
+
+            <a
+                href="{{ url_for('index') }}"
+                class="btn btn-outline-primary btn-sm"
+            >
+                Clear Filters
             </a>
 
         {% else %}
