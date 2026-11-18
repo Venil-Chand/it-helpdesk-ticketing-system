@@ -558,6 +558,10 @@ def ticket_detail(ticket_id):
     comments = db.get_comments(ticket_id)
     history = db.get_ticket_history(ticket_id)
 
+    # Response SLA, or None for tickets created before SLA tracking.
+    # Also loaded only after the access check.
+    sla = db.get_ticket_sla_status(ticket_id)
+
     # Only support staff need the assignment list
     if is_tech_or_admin():
 
@@ -573,6 +577,7 @@ def ticket_detail(ticket_id):
         ticket=ticket,
         comments=comments,
         history=history,
+        sla=sla,
         statuses=STATUSES,
         all_users=all_users
     )

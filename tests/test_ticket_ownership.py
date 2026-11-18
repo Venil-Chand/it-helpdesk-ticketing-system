@@ -80,6 +80,9 @@ class TestTicketOwnership(unittest.TestCase):
             "app.db.get_ticket_history",
             return_value=[]
         ), patch(
+            "app.db.get_ticket_sla_status",
+            return_value=None
+        ), patch(
             "app.db.get_all_usernames",
             return_value=[]
         ), patch(
@@ -100,11 +103,16 @@ class TestTicketOwnership(unittest.TestCase):
             return_value=self.bob_ticket
         ), patch(
             "app.db.get_ticket_history"
-        ) as mock_history:
+        ) as mock_history, patch(
+            "app.db.get_ticket_sla_status"
+        ) as mock_sla:
 
             response = self.client.get("/tickets/2")
 
             self.assertEqual(response.status_code, 404)
+
+            # Bob's SLA is never loaded for Alice either
+            mock_sla.assert_not_called()
 
             # Bob's activity history is never even loaded for Alice
             mock_history.assert_not_called()
@@ -122,6 +130,9 @@ class TestTicketOwnership(unittest.TestCase):
         ), patch(
             "app.db.get_ticket_history",
             return_value=[]
+        ), patch(
+            "app.db.get_ticket_sla_status",
+            return_value=None
         ), patch(
             "app.db.get_all_usernames",
             return_value=[]

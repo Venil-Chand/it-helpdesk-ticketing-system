@@ -1,6 +1,13 @@
 
+import logging
 import sqlite3
 import os
+
+import sla_storage
+from sla import is_qualifying_response
+
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------
@@ -140,6 +147,14 @@ def init_db():
             SELECT RAISE(ABORT, 'ticket history is append-only');
         END
     ''')
+
+    # ---------------------------------------------------
+    # RESPONSE SLA
+    # ---------------------------------------------------
+
+    # One SLA row per ticket. Tickets created before SLA tracking
+    # have no row and are shown without an SLA.
+    sla_storage.initialize_sla_schema(conn)
 
     # Save database changes
     conn.commit()
@@ -397,9 +412,9 @@ def create_ticket(title, description, priority, created_by):
     conn = get_db()
 
     try:
-        # "with conn" commits both statements together on success, or
-        # rolls both back if either fails, so a ticket can never exist
-        # without its "created" event
+        # "with conn" commits every statement together on success, or
+        # rolls them all back if any fails, so a ticket can never exist
+        # without its "created" event or its SLA deadline
         with conn:
             cursor = conn.execute(
                 '''
@@ -414,6 +429,21 @@ def create_ticket(title, description, priority, created_by):
             ticket_id = cursor.lastrowid
 
             _record_event(conn, ticket_id, created_by, "created")
+
+            # Base the deadline on the creation time SQLite stored, so
+            # the SLA and the ticket can never disagree about it. An
+            # unknown priority raises ValueError and nothing is saved.
+            stored = conn.execute(
+                "SELECT priority, created_at FROM tickets WHERE id = ?",
+                (ticket_id,)
+            ).fetchone()
+
+            sla_storage.create_ticket_sla(
+                conn,
+                ticket_id,
+                stored["priority"],
+                sla_storage.parse_stored_utc(stored["created_at"])
+            )
 
         return ticket_id
 
@@ -535,17 +565,19 @@ def add_comment(ticket_id, author, content):
     conn = get_db()
 
     try:
-        # The comment, the timestamp update and the history event are
-        # saved together or not at all
+        # The comment, the timestamp update, the history event and any
+        # SLA first response are saved together or not at all
         with conn:
             # Insert a new comment
-            conn.execute(
+            cursor = conn.execute(
                 '''
                 INSERT INTO comments (ticket_id, author, content)
                 VALUES (?, ?, ?)
                 ''',
                 (ticket_id, author, content)
             )
+
+            comment_id = cursor.lastrowid
 
             # Update the ticket's modification time
             conn.execute(
@@ -558,6 +590,74 @@ def add_comment(ticket_id, author, content):
             )
 
             _record_event(conn, ticket_id, author, "commented")
+
+            _record_sla_response(conn, comment_id)
+
+    finally:
+        conn.close()
+
+
+def _record_sla_response(conn, comment_id):
+    """
+    Record a comment as the ticket's first SLA response if it qualifies.
+
+    Uses the caller's open connection and never commits. The author's
+    role is read from the users table inside the same transaction, so
+    the decision never depends on a value supplied by the caller.
+
+    Returns True only if this comment became the first response.
+    """
+
+    row = conn.execute(
+        '''
+        SELECT c.ticket_id, c.author, c.created_at,
+               t.created_by, u.role
+        FROM comments AS c
+        JOIN tickets AS t ON t.id = c.ticket_id
+        LEFT JOIN users AS u ON u.username = c.author
+        WHERE c.id = ?
+        ''',
+        (comment_id,)
+    ).fetchone()
+
+    if row is None or not is_qualifying_response(
+        row["author"], row["role"], row["created_by"]
+    ):
+        return False
+
+    # Uses the comment's own stored time. Only the first qualifying
+    # response is kept, and tickets without an SLA row are left alone.
+    return sla_storage.record_first_response(
+        conn,
+        row["ticket_id"],
+        sla_storage.parse_stored_utc(row["created_at"])
+    )
+
+
+# ---------------------------------------------------
+# RESPONSE SLA
+# ---------------------------------------------------
+
+def get_ticket_sla_status(ticket_id, now=None):
+    """
+    Retrieve a ticket's response SLA and its current status.
+
+    Returns None if the ticket has no SLA (created before SLA tracking)
+    or if its stored SLA values cannot be read. A damaged row is logged
+    rather than allowed to break the ticket page.
+    """
+
+    conn = get_db()
+
+    try:
+        return sla_storage.get_ticket_sla_status(conn, ticket_id, now=now)
+
+    except (TypeError, ValueError):
+        logger.warning(
+            "Unreadable SLA record for ticket %s", ticket_id,
+            exc_info=True
+        )
+        return None
 
     finally:
         conn.close()

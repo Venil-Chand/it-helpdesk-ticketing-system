@@ -68,6 +68,7 @@ class TestHistoryTimeline(unittest.TestCase):
         with patch("app.db.get_ticket", return_value=self.ticket), \
                 patch("app.db.get_comments", return_value=[]), \
                 patch("app.db.get_ticket_history", return_value=history), \
+                patch("app.db.get_ticket_sla_status", return_value=None), \
                 patch("app.db.get_all_usernames", return_value=["tech2"]):
             response = self.client.get("/tickets/1")
 
