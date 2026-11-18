@@ -37,6 +37,7 @@ from dotenv import load_dotenv
 
 import database as db
 from csv_export import build_tickets_csv
+from sla_storage import parse_stored_utc
 
 
 # ---------------------------------------------------
@@ -115,6 +116,26 @@ SLA_FILTERS = {
 
 # The reverse lookup, label -> URL value, for building links
 SLA_FILTER_KEYS = {label: key for key, label in SLA_FILTERS.items()}
+
+
+# ---------------------------------------------------
+# TEMPLATE FILTERS
+# ---------------------------------------------------
+
+@app.template_filter("utc_time")
+def format_utc_time(value):
+    """
+    Show a stored timestamp as "YYYY-MM-DD HH:MM UTC".
+
+    The text is converted to UTC first, so a value stored with an offset
+    such as "+05:30" is never mislabelled. Unreadable values are shown
+    as they are (Jinja still escapes them) instead of breaking the page.
+    """
+
+    try:
+        return parse_stored_utc(value).strftime("%Y-%m-%d %H:%M UTC")
+    except (TypeError, ValueError):
+        return value or ""
 
 
 # ---------------------------------------------------
