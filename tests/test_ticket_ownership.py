@@ -2,7 +2,7 @@
 import os
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import database as db
 from app import app
@@ -199,7 +199,8 @@ class TestTicketOwnership(unittest.TestCase):
           1. Both queries are restricted to Alice's username, so neither
              the page contents nor the ticket total include other users.
           2. get_all_tickets is never called for a regular user.
-          3. get_stats is called with username= so statistics are user-specific.
+          3. get_stats and get_sla_stats are called with username= so
+             statistics, including the SLA cards, are user-specific.
           4. Only Alice's ticket appears in the template context.
         """
         self.login_as("alice", "user")
@@ -227,6 +228,9 @@ class TestTicketOwnership(unittest.TestCase):
             "app.db.get_stats",
             return_value=mock_stats
         ) as mock_stats_fn, patch(
+            "app.db.get_sla_stats",
+            return_value={}
+        ) as mock_sla_stats_fn, patch(
             "app.render_template",
             return_value="Dashboard"
         ) as mock_template:
@@ -241,7 +245,9 @@ class TestTicketOwnership(unittest.TestCase):
                 search_text="",
                 username="alice",
                 status_filter="All",
-                priority_filter="All"
+                priority_filter="All",
+                sla_filter="All",
+                now=ANY
             )
 
             # The page must be read from Alice's tickets only,
@@ -251,8 +257,10 @@ class TestTicketOwnership(unittest.TestCase):
                 username="alice",
                 status_filter="All",
                 priority_filter="All",
+                sla_filter="All",
                 page=1,
-                per_page=10
+                per_page=10,
+                now=ANY
             )
 
             # Regular users must never trigger the all-tickets query
@@ -260,6 +268,10 @@ class TestTicketOwnership(unittest.TestCase):
 
             # Statistics must be scoped to Alice, not the whole system
             mock_stats_fn.assert_called_once_with(username="alice")
+            mock_sla_stats_fn.assert_called_once_with(
+                username="alice",
+                now=ANY
+            )
 
             # Inspect the ticket list passed to the template
             displayed_tickets = (

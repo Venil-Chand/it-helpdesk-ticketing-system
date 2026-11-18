@@ -157,6 +157,15 @@ class TestDashboardPaginationRoute(unittest.TestCase):
         db_guard.start()
         self.addCleanup(db_guard.stop)
 
+        # The dashboard also reads SLA statistics; mock them too so the
+        # database is never queried
+        sla_stats_patch = patch(
+            "app.db.get_sla_stats",
+            return_value=dict.fromkeys(db.SLA_STATUS_LABELS, 0)
+        )
+        sla_stats_patch.start()
+        self.addCleanup(sla_stats_patch.stop)
+
         self.ticket = {
             "id": 7,
             "title": "Printer not working",

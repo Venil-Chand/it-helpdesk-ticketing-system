@@ -21,7 +21,7 @@ NOT mocked, because several tests need to inspect the actual HTML.
 import os
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import database as db
 from app import app
@@ -52,6 +52,15 @@ class TestSearchRoute(unittest.TestCase):
         )
         db_guard.start()
         self.addCleanup(db_guard.stop)
+
+        # The dashboard also reads SLA statistics; mock them too so the
+        # database is never queried
+        sla_stats_patch = patch(
+            "app.db.get_sla_stats",
+            return_value=dict.fromkeys(db.SLA_STATUS_LABELS, 0)
+        )
+        sla_stats_patch.start()
+        self.addCleanup(sla_stats_patch.stop)
 
         # A complete ticket record matching what the template expects
         self.alice_ticket = {
@@ -125,11 +134,18 @@ class TestSearchRoute(unittest.TestCase):
             "username": username,
             "status_filter": status,
             "priority_filter": priority,
+            "sla_filter": "All",
         }
 
-        mock_count.assert_called_once_with(**filters)
+        mock_count.assert_called_once_with(**filters, now=ANY)
         mock_page.assert_called_once_with(
-            **filters, page=page, per_page=10
+            **filters, page=page, per_page=10, now=ANY
+        )
+
+        # Both must evaluate SLA status at the very same moment
+        self.assertIs(
+            mock_count.call_args.kwargs["now"],
+            mock_page.call_args.kwargs["now"]
         )
 
     # -----------------------------------------------------
