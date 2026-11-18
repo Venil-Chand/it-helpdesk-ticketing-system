@@ -2,9 +2,14 @@
 import logging
 import sqlite3
 import os
+from datetime import datetime, timezone
 
 import sla_storage
-from sla import is_qualifying_response
+from sla import (
+    ALERT_WINDOW,
+    is_qualifying_response,
+    require_aware_datetime
+)
 
 
 logger = logging.getLogger(__name__)
@@ -220,6 +225,146 @@ def _ticket_filters(
 
 
 # ---------------------------------------------------
+# SLA STATUS IN SQL
+# ---------------------------------------------------
+
+# Every SLA status the dashboard shows, in display order. The first five
+# are the labels sla.assess_response_sla() returns. "Not Tracked" is for
+# tickets with no SLA row (created before SLA tracking) or an SLA row
+# whose timestamps cannot be read, which the ticket page also shows
+# without an SLA. Such tickets are never counted as overdue.
+SLA_STATUS_LABELS = (
+    "Within SLA",
+    "Due Soon",
+    "Overdue",
+    "Met",
+    "Breached",
+    "Not Tracked",
+)
+
+# The same rules as sla.assess_response_sla(), written in SQL so the
+# database can count and filter tickets without sending every row to
+# Python. julianday() turns stored text into a number of days in UTC: it
+# treats text without an offset as UTC and converts "+05:30" or "Z" to
+# UTC, exactly like sla_storage.parse_stored_utc(). A damaged row becomes
+# "Not Tracked" instead of being counted as overdue.
+#
+# The two ? placeholders are the request's current UTC time and that time
+# plus ALERT_WINDOW. Comparing the deadline with "now + window" avoids
+# subtracting floating-point day numbers, so the boundaries are exact:
+#   response at the deadline   -> Met       (response_at <= deadline)
+#   no response at the deadline -> Overdue  (now >= deadline)
+#   exactly 30 minutes left     -> Due Soon (deadline <= now + window)
+
+
+def _readable_timestamp_sql(column):
+    """
+    SQL that is true only if `column` holds a date-time text value.
+
+    julianday() also accepts things parse_stored_utc() rejects, such as
+    '2461000' (read as a Julian day number) or 'now' (the current time),
+    so the text must also start with a YYYY-MM-DD date.
+    """
+
+    return (
+        f"(typeof({column}) = 'text'"
+        f" AND {column} GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'"
+        f" AND julianday({column}) IS NOT NULL)"
+    )
+
+
+_SLA_STATUS_SQL = f"""
+    CASE
+        WHEN s.ticket_id IS NULL
+          OR NOT {_readable_timestamp_sql("s.response_due_at")}
+          OR (s.first_response_at IS NOT NULL
+              AND NOT {_readable_timestamp_sql("s.first_response_at")})
+            THEN 'Not Tracked'
+        WHEN s.first_response_at IS NOT NULL THEN
+            CASE
+                WHEN julianday(s.first_response_at)
+                     <= julianday(s.response_due_at)
+                    THEN 'Met'
+                ELSE 'Breached'
+            END
+        WHEN julianday(?) >= julianday(s.response_due_at)
+            THEN 'Overdue'
+        WHEN julianday(s.response_due_at) <= julianday(?)
+            THEN 'Due Soon'
+        ELSE 'Within SLA'
+    END
+"""
+
+# Each ticket with its SLA columns, as one derived table. The LEFT JOIN
+# keeps tickets that have no SLA row. ticket_sla.ticket_id is the table's
+# INTEGER PRIMARY KEY, so each lookup is a direct primary-key search.
+# None of the extra column names clash with ticket columns, so the shared
+# filters (created_by = ?, status = ?, ...) work on it unchanged.
+_SLA_TICKET_SOURCE = f"""
+    (
+        SELECT t.*,
+               s.response_due_at   AS sla_response_due_at,
+               s.first_response_at AS sla_first_response_at,
+               {_SLA_STATUS_SQL}   AS sla_status
+        FROM tickets AS t
+        LEFT JOIN ticket_sla AS s ON s.ticket_id = t.id
+    ) AS ticket_rows
+"""
+
+
+def _sla_clock(now):
+    """
+    Return the two time parameters for _SLA_STATUS_SQL.
+
+    now=None means the current time. A naive datetime is rejected, since
+    its time zone would be a guess. Times are sent to SQLite as UTC text
+    with milliseconds, the precision julianday() works with.
+    """
+
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    require_aware_datetime(now, "now")
+
+    now_utc = now.astimezone(timezone.utc)
+
+    return [
+        now_utc.isoformat(timespec="milliseconds"),
+        (now_utc + ALERT_WINDOW).isoformat(timespec="milliseconds"),
+    ]
+
+
+def _sla_ticket_query(columns, *, now, sla_filter, filters, suffix=""):
+    """
+    Build "SELECT <columns>" over tickets joined with their SLA status.
+
+    filters are the keyword arguments for _ticket_filters(), so ownership
+    is applied exactly as in every other ticket query. sla_filter is one
+    of SLA_STATUS_LABELS, or "All"/None for no SLA restriction. Every
+    value is a bound parameter.
+
+    Returns (sql, params).
+    """
+
+    where, params = _ticket_filters(**filters)
+
+    if sla_filter and sla_filter != "All":
+        # The route only passes known labels. Anything else is a bug,
+        # and must fail loudly rather than silently match nothing.
+        if sla_filter not in SLA_STATUS_LABELS:
+            raise ValueError(f"Unknown SLA status: {sla_filter!r}")
+
+        where += (" AND " if where else " WHERE ") + "sla_status = ?"
+        params.append(sla_filter)
+
+    # The clock placeholders are inside the derived table, which comes
+    # before the WHERE clause in the SQL text, so their values go first
+    sql = f"SELECT {columns} FROM {_SLA_TICKET_SOURCE}{where}{suffix}"
+
+    return sql, _sla_clock(now) + params
+
+
+# ---------------------------------------------------
 # TICKET FUNCTIONS
 # ---------------------------------------------------
 
@@ -263,7 +408,10 @@ def search_tickets(
     search_text="",
     username=None,
     status_filter="All",
-    priority_filter="All"
+    priority_filter="All",
+    *,
+    sla_filter="All",
+    now=None
 ):
     """
     Search tickets by title or description.
@@ -271,22 +419,38 @@ def search_tickets(
     If username is provided, retrieve only that user's
     tickets. Otherwise, search all tickets.
 
-    Optional status and priority filters are supported.
+    Optional status, priority and SLA status filters are supported.
+    The SLA status is evaluated at `now` (default: the current UTC time).
     """
 
-    where, params = _ticket_filters(
-        search_text=search_text,
-        username=username,
-        status_filter=status_filter,
-        priority_filter=priority_filter
-    )
+    filters = {
+        "search_text": search_text,
+        "username": username,
+        "status_filter": status_filter,
+        "priority_filter": priority_filter
+    }
 
-    # Display newest matching tickets first
-    query = (
-        "SELECT * FROM tickets"
-        + where
-        + " ORDER BY created_at DESC, id DESC"
-    )
+    if sla_filter and sla_filter != "All":
+        # Only the matching rows change. ticket_rows.* also carries the
+        # SLA columns, which callers such as the CSV export ignore.
+        query, params = _sla_ticket_query(
+            "*",
+            now=now,
+            sla_filter=sla_filter,
+            filters=filters,
+            suffix=" ORDER BY created_at DESC, id DESC"
+        )
+
+    else:
+        # Without an SLA filter this is exactly the original query
+        where, params = _ticket_filters(**filters)
+
+        # Display newest matching tickets first
+        query = (
+            "SELECT * FROM tickets"
+            + where
+            + " ORDER BY created_at DESC, id DESC"
+        )
 
     conn = get_db()
 
@@ -306,24 +470,41 @@ def count_tickets(
     search_text="",
     username=None,
     status_filter="All",
-    priority_filter="All"
+    priority_filter="All",
+    sla_filter="All",
+    now=None
 ):
-    """Count the tickets matching the same filters as get_tickets_page()."""
+    """
+    Count the tickets matching the same filters as get_tickets_page().
 
-    where, params = _ticket_filters(
-        search_text=search_text,
-        username=username,
-        status_filter=status_filter,
-        priority_filter=priority_filter
-    )
+    Pass the same `now` to both so the SLA filter selects the same
+    tickets in the count and on the page.
+    """
+
+    filters = {
+        "search_text": search_text,
+        "username": username,
+        "status_filter": status_filter,
+        "priority_filter": priority_filter
+    }
+
+    if sla_filter and sla_filter != "All":
+        query, params = _sla_ticket_query(
+            "COUNT(*)",
+            now=now,
+            sla_filter=sla_filter,
+            filters=filters
+        )
+
+    else:
+        # No SLA filter: count the tickets table alone, skipping the join
+        where, params = _ticket_filters(**filters)
+        query = "SELECT COUNT(*) FROM tickets" + where
 
     conn = get_db()
 
     try:
-        return conn.execute(
-            "SELECT COUNT(*) FROM tickets" + where,
-            params
-        ).fetchone()[0]
+        return conn.execute(query, params).fetchone()[0]
 
     finally:
         conn.close()
@@ -336,7 +517,9 @@ def get_tickets_page(
     search_text="",
     username=None,
     status_filter="All",
-    priority_filter="All"
+    priority_filter="All",
+    sla_filter="All",
+    now=None
 ):
     """
     Retrieve one page of matching tickets, newest first.
@@ -344,6 +527,11 @@ def get_tickets_page(
     Only the rows for the requested page are read from the database,
     using LIMIT and OFFSET. Pages are numbered from 1, and a page past
     the end returns an empty list.
+
+    Each row also has sla_status, sla_response_due_at and
+    sla_first_response_at, evaluated at `now` (default: the current UTC
+    time) in the same query, so the dashboard never runs one SLA query
+    per ticket. The SLA filter is applied before LIMIT and OFFSET.
     """
 
     # Keep the page number and page size inside safe bounds
@@ -353,20 +541,19 @@ def get_tickets_page(
     # Page 1 skips 0 rows, page 2 skips per_page rows, and so on
     offset = (page - 1) * per_page
 
-    where, params = _ticket_filters(
-        search_text=search_text,
-        username=username,
-        status_filter=status_filter,
-        priority_filter=priority_filter
-    )
-
     # id DESC breaks ties between tickets created in the same second,
     # giving every ticket one fixed position so pages never overlap
-    query = (
-        "SELECT * FROM tickets"
-        + where
-        + " ORDER BY created_at DESC, id DESC"
-        + " LIMIT ? OFFSET ?"
+    query, params = _sla_ticket_query(
+        "*",
+        now=now,
+        sla_filter=sla_filter,
+        filters={
+            "search_text": search_text,
+            "username": username,
+            "status_filter": status_filter,
+            "priority_filter": priority_filter
+        },
+        suffix=" ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
     )
 
     conn = get_db()
@@ -792,6 +979,47 @@ def get_stats(username=None):
 
     finally:
         conn.close()
+
+
+def get_sla_stats(username=None, now=None):
+    """
+    Count tickets in each SLA status, evaluated at one moment `now`.
+
+    If username is None:
+        Count every ticket (only correct for technicians and admins).
+
+    If username is provided:
+        Count only the tickets that user created.
+
+    Like get_stats(), this covers every ticket the user may see, not one
+    dashboard page or search result. Returns a dict with every label in
+    SLA_STATUS_LABELS, in display order, including those with zero.
+    """
+
+    # GROUP BY lets SQLite do all the counting in a single pass, so only
+    # at most six (status, count) rows ever reach Python
+    query, params = _sla_ticket_query(
+        "sla_status, COUNT(*) AS ticket_count",
+        now=now,
+        sla_filter="All",
+        filters={"username": username},
+        suffix=" GROUP BY sla_status"
+    )
+
+    conn = get_db()
+
+    try:
+        rows = conn.execute(query, params).fetchall()
+
+    finally:
+        conn.close()
+
+    counts = dict.fromkeys(SLA_STATUS_LABELS, 0)
+
+    for row in rows:
+        counts[row["sla_status"]] = row["ticket_count"]
+
+    return counts
 
 
 # ---------------------------------------------------
