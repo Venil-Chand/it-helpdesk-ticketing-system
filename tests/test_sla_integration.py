@@ -167,8 +167,11 @@ class TestSLASchema(TempDatabaseMixin, unittest.TestCase):
         self.assertEqual(self.sla_row(ticket_id), before)
 
     def test_init_db_upgrades_database_without_sla_table(self):
+        # A database from before SLA tracking also predates schema
+        # versioning, so it has no ticket_sla and user_version 0
         with self.connect() as conn:
             conn.execute("DROP TABLE ticket_sla")
+            conn.execute("PRAGMA user_version = 0")
 
         old_ticket = self.insert_historical_ticket()
 

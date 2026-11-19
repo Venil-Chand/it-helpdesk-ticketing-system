@@ -4,6 +4,7 @@ import sqlite3
 import os
 from datetime import datetime, timezone
 
+import migrations
 import sla_storage
 from sla import (
     ALERT_WINDOW,
@@ -46,126 +47,21 @@ def get_db():
 # ---------------------------------------------------
 
 def init_db():
-    """Create database tables if they do not already exist."""
+    """
+    Create or upgrade the database schema to the latest version.
 
-    conn = get_db()
-    c = conn.cursor()
+    The tables, indexes and triggers are defined as numbered migrations
+    in migrations.py, applied in order in a single transaction. Running
+    this again on an up-to-date database changes nothing.
 
-    # Create users table
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            username      TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            role          TEXT NOT NULL DEFAULT 'user'
-        )
-    ''')
+    In production use "flask --app app init-db" before starting the
+    application, rather than calling this from web workers.
 
-    # Create tickets table
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS tickets (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            title       TEXT NOT NULL,
-            description TEXT NOT NULL,
-            priority    TEXT NOT NULL DEFAULT 'Medium',
-            status      TEXT NOT NULL DEFAULT 'Open',
-            assigned_to TEXT,
-            created_by  TEXT,
-            created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
+    Returns a migrations.MigrationResult. Raises migrations.MigrationError
+    or sqlite3.Error on failure, leaving the database unchanged.
+    """
 
-    # Create comments table
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS comments (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            ticket_id  INTEGER NOT NULL,
-            author     TEXT NOT NULL,
-            content    TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (ticket_id) REFERENCES tickets(id)
-        )
-    ''')
-
-    # ---------------------------------------------------
-    # DATABASE INDEXES
-    # ---------------------------------------------------
-
-    # Improve ticket retrieval for individual users
-    # and support ordering by creation time
-    c.execute('''
-        CREATE INDEX IF NOT EXISTS idx_tickets_owner_date
-        ON tickets (created_by, created_at DESC, id DESC)
-    ''')
-
-    # Let staff pages read the newest tickets in order from the index,
-    # instead of sorting the whole table on every dashboard request
-    c.execute('''
-        CREATE INDEX IF NOT EXISTS idx_tickets_date
-        ON tickets (created_at DESC, id DESC)
-    ''')
-
-    # ---------------------------------------------------
-    # TICKET ACTIVITY HISTORY
-    # ---------------------------------------------------
-
-    # One ticket has many history events. created_at uses SQLite's
-    # CURRENT_TIMESTAMP, which is always UTC.
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS ticket_history (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            ticket_id  INTEGER NOT NULL,
-            actor      TEXT NOT NULL,
-            action     TEXT NOT NULL CHECK (action IN (
-                           'created', 'status_changed', 'assigned',
-                           'reassigned', 'unassigned', 'commented'
-                       )),
-            field_name TEXT,
-            old_value  TEXT,
-            new_value  TEXT,
-            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (ticket_id) REFERENCES tickets(id)
-        )
-    ''')
-
-    # Fetch one ticket's events in order without sorting the table
-    c.execute('''
-        CREATE INDEX IF NOT EXISTS idx_ticket_history_ticket
-        ON ticket_history (ticket_id, created_at DESC, id DESC)
-    ''')
-
-    # History is append-only: the database refuses edits and deletions,
-    # so the application cannot silently rewrite what happened
-    c.execute('''
-        CREATE TRIGGER IF NOT EXISTS ticket_history_no_update
-        BEFORE UPDATE ON ticket_history
-        BEGIN
-            SELECT RAISE(ABORT, 'ticket history is append-only');
-        END
-    ''')
-
-    c.execute('''
-        CREATE TRIGGER IF NOT EXISTS ticket_history_no_delete
-        BEFORE DELETE ON ticket_history
-        BEGIN
-            SELECT RAISE(ABORT, 'ticket history is append-only');
-        END
-    ''')
-
-    # ---------------------------------------------------
-    # RESPONSE SLA
-    # ---------------------------------------------------
-
-    # One SLA row per ticket. Tickets created before SLA tracking
-    # have no row and are shown without an SLA.
-    sla_storage.initialize_sla_schema(conn)
-
-    # Save database changes
-    conn.commit()
-
-    # Close database connection
-    conn.close()
+    return migrations.migrate(DB_PATH)
 
 
 # ---------------------------------------------------
