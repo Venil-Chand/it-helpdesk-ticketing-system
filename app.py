@@ -4,19 +4,25 @@ IT Helpdesk Ticketing System
 
 Run locally:
     pip install -r requirements.txt
+    flask --app app init-db
     python setup_accounts.py
     python app.py
 
 Open in browser:
     http://127.0.0.1:5000
 
-User accounts are managed using setup_accounts.py.
+The database schema is created and upgraded only by "flask --app app
+init-db"; "flask --app app db-status" reports it without changing
+anything. User accounts are managed using setup_accounts.py.
 """
 
 import math
 import os
+import sqlite3
+import sys
 from datetime import datetime, timezone
 
+import click
 from flask import (
     Flask,
     Response,
@@ -36,6 +42,7 @@ from werkzeug.security import check_password_hash
 from dotenv import load_dotenv
 
 import database as db
+import migrations
 from csv_export import build_tickets_csv
 from sla_storage import parse_stored_utc
 
@@ -790,13 +797,225 @@ def add_comment(ticket_id):
 
 
 # ---------------------------------------------------
+# DATABASE READINESS
+# ---------------------------------------------------
+
+# Shown to anyone who reaches the site while the schema is not ready.
+# It deliberately names no file paths, versions or table names.
+SCHEMA_NOT_READY_MESSAGE = (
+    "The helpdesk is temporarily unavailable because its database has "
+    "not been initialised or upgraded. An administrator must run the "
+    "database migration.\n"
+)
+
+
+@app.errorhandler(sqlite3.OperationalError)
+def database_not_ready(error):
+    """
+    Turn "no such table" style failures into an explained 503.
+
+    Web workers never migrate the database themselves; migrations are an
+    explicit deployment step ("flask --app app init-db"). If a query fails
+    and the schema is not at the expected version, the visitor gets a 503
+    and the log says exactly what the administrator must do. Any other
+    database error is re-raised and handled as before.
+    """
+
+    try:
+        status = migrations.schema_status(db.DB_PATH)
+    except Exception:
+        status = None
+
+    if status is None or status.is_current:
+        raise error
+
+    app.logger.error(
+        "Database schema is not ready (state=%s, version=%s, expected=%s). "
+        "Run 'flask --app app init-db' before starting the application.",
+        status.state, status.version, status.target
+    )
+
+    return Response(
+        SCHEMA_NOT_READY_MESSAGE,
+        status=503,
+        content_type="text/plain; charset=utf-8",
+        headers={"Cache-Control": "no-store", "Retry-After": "60"}
+    )
+
+
+# ---------------------------------------------------
+# DATABASE COMMAND-LINE TOOLS
+# ---------------------------------------------------
+
+STATE_DESCRIPTIONS = {
+    "missing": "database file does not exist yet",
+    "uninitialized": "empty database",
+    "legacy": "database created before schema versioning",
+    "outdated": "older schema version",
+    "current": "up to date",
+    "too_new": "created by a newer version of this application",
+    "incompatible": "unexpected or incompatible schema",
+}
+
+
+def _echo_status(status):
+    """Print a schema status. Never prints stored data or secrets."""
+
+    click.echo(f"Database: {db.DB_PATH}")
+    click.echo(
+        f"Current schema version: {status.version} "
+        f"({STATE_DESCRIPTIONS.get(status.state, status.state)})"
+    )
+    click.echo(f"Latest supported version: {status.target}")
+
+    if status.pending:
+        click.echo("Pending migrations:")
+        for migration in status.pending:
+            click.echo(f"  {migration.version}: {migration.description}")
+        if status.state == "legacy":
+            click.echo(
+                "  (existing tables and data are kept; each step only "
+                "adds what is missing)"
+            )
+    elif status.is_current:
+        click.echo("Pending migrations: none")
+
+    for problem in status.problems:
+        click.echo(f"Problem: {problem}", err=True)
+
+
+def _fail(message):
+    click.echo(f"Error: {message}", err=True)
+    sys.exit(1)
+
+
+@app.cli.command("db-status")
+def db_status_command():
+    """Report the database schema version without changing anything.
+
+    Exits 0 only if the schema is up to date, so it can be used as a
+    pre-start check for the application service.
+    """
+
+    try:
+        status = migrations.schema_status(db.DB_PATH)
+    except sqlite3.Error as error:
+        _fail(f"could not read the database ({type(error).__name__}: {error})")
+
+    _echo_status(status)
+
+    if not status.is_current:
+        click.echo(
+            "The schema is not up to date. "
+            "Back up the database, then run: flask --app app init-db",
+            err=True
+        )
+        sys.exit(1)
+
+
+@app.cli.command("init-db")
+@click.option(
+    "--backup-to",
+    type=click.Path(dir_okay=False),
+    help="Write a verified backup of the existing database to this new "
+         "file before applying migrations.",
+)
+def init_db_command(backup_to):
+    """Create the database or apply pending schema migrations.
+
+    Never creates user accounts; use setup_accounts.py for the first
+    administrator.
+    """
+
+    try:
+        status = migrations.schema_status(db.DB_PATH)
+    except sqlite3.Error as error:
+        _fail(f"could not read the database ({type(error).__name__}: {error})")
+
+    _echo_status(status)
+
+    if status.state in ("too_new", "incompatible"):
+        _fail("migration refused; the database was not changed.")
+
+    if status.is_current:
+        click.echo("Database schema is already up to date.")
+        return
+
+    if backup_to:
+        if status.state == "missing":
+            _fail("there is no existing database to back up.")
+
+        try:
+            migrations.backup_database(db.DB_PATH, backup_to)
+        except (migrations.MigrationError, sqlite3.Error, OSError) as error:
+            _fail(f"backup failed, so no migration was attempted: {error}")
+
+        click.echo(f"Verified backup written to: {backup_to}")
+
+    elif status.state in ("legacy", "outdated"):
+        click.echo(
+            "Warning: no --backup-to given. Make sure a verified backup "
+            "of this database exists before upgrading production.",
+            err=True
+        )
+
+    click.echo("Applying migrations...")
+
+    try:
+        result = migrations.migrate(db.DB_PATH)
+
+    except (migrations.MigrationError, sqlite3.Error) as error:
+        _fail(
+            f"migration failed and was rolled back; the database was not "
+            f"changed ({type(error).__name__}: {error})"
+        )
+
+    for migration in result.applied:
+        click.echo(f"  applied {migration.version}: {migration.description}")
+
+    click.echo(f"Database schema is now at version {result.final_version}.")
+
+
+def schema_ready_for_startup():
+    """
+    Check the schema before the development server starts.
+
+    "python app.py" no longer creates or upgrades the database itself, so
+    a missing or outdated schema stops startup with clear instructions
+    instead of failing later with errors on every page.
+    """
+
+    try:
+        status = migrations.schema_status(db.DB_PATH)
+    except sqlite3.Error as error:
+        print(
+            f"Cannot read the database: {type(error).__name__}: {error}",
+            file=sys.stderr
+        )
+        return False
+
+    if status.is_current:
+        return True
+
+    print(
+        "The database schema is not up to date "
+        f"({STATE_DESCRIPTIONS.get(status.state, status.state)}).\n"
+        "Check it with:    flask --app app db-status\n"
+        "Upgrade it with:  flask --app app init-db",
+        file=sys.stderr
+    )
+    return False
+
+
+# ---------------------------------------------------
 # START APPLICATION
 # ---------------------------------------------------
 
 if __name__ == "__main__":
 
-    # Create database tables if needed
-    db.init_db()
+    # The schema is migrated explicitly with "flask --app app init-db"
+    if not schema_ready_for_startup():
+        sys.exit(1)
 
     print(
         "\nIT Helpdesk running at "
