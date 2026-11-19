@@ -189,7 +189,7 @@ it-helpdesk-ticketing-system/
 ├── sla_storage.py
 ├── csv_export.py
 ├── setup_accounts.py
-├── migrate.py
+├── migrations.py
 ├── requirements.txt
 ├── .env.example
 ├── .gitignore
@@ -231,7 +231,7 @@ it-helpdesk-ticketing-system/
 | `sla_storage.py` | Stores SLA deadlines and first responses; reads stored UTC timestamps |
 | `csv_export.py` | Builds safe CSV files from ticket rows |
 | `setup_accounts.py` | Initial administrator setup and password changes |
-| `migrate.py` | Migration from an earlier database structure |
+| `migrations.py` | Versioned, transaction-safe schema migrations (replaces the retired `migrate.py`) |
 | `tests/` | 349 automated tests covering auth, CSRF, ownership, search, pagination, CSV export, history and SLA |
 
 The local `helpdesk.db` database and `.env` file are excluded from version control.

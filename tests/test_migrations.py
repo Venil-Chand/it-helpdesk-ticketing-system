@@ -587,5 +587,34 @@ class TestBackup(TempDatabase, unittest.TestCase):
         self.assertFalse(os.path.exists(self.path))
 
 
+# ---------------------------------------------------
+# RETIRED INSECURE MIGRATION SCRIPT
+# ---------------------------------------------------
+
+class TestLegacySeedingRetired(unittest.TestCase):
+
+    PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    def test_legacy_migrate_script_is_gone(self):
+        self.assertFalse(
+            os.path.exists(os.path.join(self.PROJECT_DIR, "migrate.py"))
+        )
+
+    def test_no_application_code_contains_default_passwords(self):
+        # The passwords the retired script seeded accounts with
+        retired_defaults = ("admin123", "venil123", "staff123")
+
+        for name in sorted(os.listdir(self.PROJECT_DIR)):
+            if not name.endswith(".py"):
+                continue
+
+            with open(os.path.join(self.PROJECT_DIR, name)) as handle:
+                source = handle.read()
+
+            for password in retired_defaults:
+                with self.subTest(file=name, password=password):
+                    self.assertNotIn(password, source)
+
+
 if __name__ == "__main__":
     unittest.main()
