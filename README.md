@@ -47,7 +47,8 @@ The project demonstrates Python programming, web development, relational databas
 - **Comments** — add notes to existing tickets
 - **Account setup** — create the first administrator using a terminal script
 - **Password changes** — verify the current password before changing it
-- **Automated tests** — 349 tests covering authentication, authorization, CSRF, search, pagination, CSV export, history and SLA monitoring
+- **Versioned database migrations** — explicit `flask --app app init-db` and read-only `db-status` commands; upgrades run in one transaction and never seed accounts
+- **Automated tests** — 429 tests covering authentication, authorization, CSRF, search, pagination, CSV export, history, SLA monitoring and database migrations
 
 ---
 
@@ -103,7 +104,17 @@ Open `.env` and set `SECRET_KEY` to the generated value.
 
 Never upload `.env` or your actual secret key to GitHub.
 
-### 5. Set up the administrator account
+### 5. Initialise the database
+
+```bash
+flask --app app init-db
+```
+
+This creates `helpdesk.db` with the latest schema. It is safe to run again: an up-to-date database is left unchanged. See [Database Schema and Migrations](#database-schema-and-migrations) before using it on an existing database.
+
+`python app.py` and `setup_accounts.py` no longer create tables themselves. If the schema is missing or outdated they stop and tell you to run this command.
+
+### 6. Set up the administrator account
 
 For a new installation, run:
 
@@ -117,7 +128,7 @@ Passwords must contain at least 16 characters.
 
 No fixed default password is created during database initialization.
 
-### 6. Start the application
+### 7. Start the application
 
 ```bash
 python app.py
@@ -128,6 +139,8 @@ Open your browser at:
 http://127.0.0.1:5000
 
 The application is intended for local development and learning.
+
+If the database has not been initialised or upgraded, `python app.py` exits with instructions instead of starting.
 
 ---
 
@@ -177,6 +190,160 @@ The script checks the current password before updating the stored password hash.
 
 This local script is not a replacement for production-grade account administration.
 
+`setup_accounts.py` requires an up-to-date database schema. Run `flask --app app init-db` first; the script no longer creates tables.
+
+---
+
+## Database Schema and Migrations
+
+The database structure is defined in `migrations.py` as a numbered list of **migrations**. Each one moves the schema forward by exactly one version.
+
+### Schema versions
+
+| Version | Migration | What it adds |
+|---|---|---|
+| 0 | — | Empty database, or a database created before versioning existed |
+| 1 | Core tables | `users`, `tickets`, `comments`; converts the original `ticket_comments` table |
+| 2 | Ticket indexes | `idx_tickets_owner_date`, `idx_tickets_date` |
+| 3 | Ticket history | Append-only `ticket_history`, its index and its two protective triggers |
+| 4 | Response SLA | `ticket_sla` (current version) |
+
+The version is stored inside the database file itself, using SQLite's built-in `PRAGMA user_version` header field. No extra table is needed.
+
+### Commands
+
+| Command | What it does | Changes the database? |
+|---|---|---|
+| `flask --app app db-status` | Shows the current version, the latest version and any pending migrations. Exits with status 0 only if the schema is up to date. | Never. The file is opened read-only, and a missing file is not created. |
+| `flask --app app init-db` | Creates a new database, or applies pending migrations in order, then reports the final version. Exits with status 1 if anything fails. | Yes |
+| `flask --app app init-db --backup-to FILE` | Writes a verified backup to a new `FILE` first. If the backup fails, no migration is attempted. | Yes |
+
+Neither command creates user accounts or prints passwords, password hashes, ticket contents or `.env` values.
+
+### Initialising a fresh database
+
+```bash
+flask --app app init-db
+python setup_accounts.py
+```
+
+### Checking the current schema
+
+```bash
+flask --app app db-status
+```
+
+Example for a database created before versioning:
+
+```text
+Current schema version: 0 (database created before schema versioning)
+Latest supported version: 4
+Pending migrations:
+  1: Create core users, tickets and comments tables
+  2: Add ticket list indexes
+  3: Add append-only ticket activity history
+  4: Add response SLA deadlines
+  (existing tables and data are kept; each step only adds what is missing)
+```
+
+### Upgrading an existing database
+
+1. Stop the application so nothing writes during the upgrade.
+2. Make and verify a backup (see below).
+3. Check what will happen: `flask --app app db-status`
+4. Upgrade: `flask --app app init-db --backup-to backups/helpdesk-before-v4.db`
+5. Confirm: `flask --app app db-status` must exit with status 0.
+6. Start the application again.
+
+**Databases from before versioning.** A database at version 0 is never assumed to be empty. Each migration inspects the actual tables and only adds what is missing, so a database that already has some newer tables is upgraded without being rebuilt. Existing tickets, comments, accounts, password hashes, history events and SLA rows are kept exactly as they are.
+
+- Tickets created before history tracking get **no** invented history events.
+- Tickets created before SLA tracking get **no** SLA row and appear as **Not Tracked**. Their deadlines and responses were never recorded, so no outcome is made up for them.
+- A database still using the original `ticket_comments` table has its notes copied into `comments` with the same ids and timestamps. The old table is kept, renamed to `ticket_comments_migrated`.
+
+**What is refused.** The upgrade stops and changes nothing if the database:
+
+- has a schema version newer than this application supports
+- is not a helpdesk database (it has tables but no `tickets` table)
+- has tables, indexes or triggers whose structure differs from what the application expects
+- contains rows that reference records that do not exist (for example, comments on deleted tickets). Only the number of such rows per table is reported. Fix them deliberately, then retry.
+
+### Why a verified backup is required
+
+A migration changes the structure of the only copy of your data. The migration is transactional, but a backup still protects against things a transaction cannot cover: a mistake in a future migration, disk failure, or needing to return to the previous application version.
+
+`--backup-to` uses SQLite's online backup API. It refuses to overwrite an existing file and runs `PRAGMA integrity_check` on the copy before the migration starts. A plain `cp` of a database that is in use can produce a corrupt copy.
+
+Keep backups outside the project directory, with permissions that restrict access. They contain password hashes and ticket data, and they must never be committed (`*.db` is already in `.gitignore`).
+
+### What happens if a migration fails
+
+All pending migrations run inside **one** SQLite transaction, started with `BEGIN IMMEDIATE`:
+
+- If any step fails, the whole transaction is rolled back, including the version number. The database is exactly as it was before the command.
+- `init-db` prints the error and exits with status 1, so scripts and deployment tools can detect the failure.
+- Running `init-db` again after fixing the cause is safe.
+- Two `init-db` commands started at the same time cannot both migrate. The second waits for the first, up to 30 seconds, then finds nothing left to do.
+
+### Local development compared with production
+
+| | Local development | Production |
+|---|---|---|
+| Start command | `python app.py` (Flask development server) | A WSGI server such as Gunicorn, with several worker processes |
+| Migrations | Run `flask --app app init-db` once, and again after pulling schema changes | Run once per deployment, by the operator, **before** starting the service |
+| Missing or outdated schema | `python app.py` refuses to start and prints the command to run | Requests that need missing tables return **503 Service Unavailable**, not 500, and the log names the command to run |
+
+Web workers never migrate the database. If several Gunicorn workers each tried to migrate at startup, they would compete for the same database and could start serving before the upgrade finished.
+
+Deployment sequence:
+
+```bash
+sudo systemctl stop helpdesk
+flask --app app init-db --backup-to /var/backups/helpdesk/helpdesk-$(date +%Y%m%d-%H%M%S).db
+flask --app app db-status          # must exit 0
+sudo systemctl start helpdesk
+```
+
+`db-status` can also guard the service itself, so it will not start against an outdated schema. Example systemd excerpt:
+
+```ini
+[Service]
+ExecStartPre=/srv/helpdesk/.venv/bin/flask --app app db-status
+ExecStart=/srv/helpdesk/.venv/bin/gunicorn --workers 3 app:app
+```
+
+Gunicorn is not yet in `requirements.txt`; production deployment is still on the roadmap.
+
+### Preparing a rollback and recovery procedure
+
+There are no "down" migrations. Recovery means restoring a backup. Before upgrading production:
+
+1. **Back up and verify.** Use `init-db --backup-to`, or a separate backup made with the application stopped. Record the backup's file name and the application commit that was running.
+2. **Rehearse.** Copy the backup to a test location and upgrade the copy first. One way is to run the tests or `migrations.migrate("copy.db")` from a Python shell against the copy.
+3. **If the upgrade fails:** nothing was changed. Read the error, fix the cause (for example, orphaned rows), and run `init-db` again.
+4. **If problems appear after a successful upgrade:**
+   - stop the application
+   - move the upgraded `helpdesk.db` aside (do not delete it)
+   - copy the verified backup into place as `helpdesk.db`
+   - check `PRAGMA integrity_check` on the restored file
+   - deploy the previous application commit, then start the service
+
+   Anything written after the upgrade exists only in the file you moved aside.
+
+Migrations 1–4 only add tables, columns, indexes and triggers. Application versions from before this change ignore `user_version` and can still run on a version 4 database.
+
+### Retired legacy migration script
+
+`migrate.py` has been removed. It created `admin`, technician and user accounts with fixed default passwords whenever the `users` table was empty, made unverified file copies, and did not use a single transaction. Its comment-table conversion is now migration 1. Git history still contains the old script for reference, but it must not be run.
+
+If a database was ever initialised with that script, make sure every account created by it has had its password changed with `python setup_accounts.py`.
+
+### Adding a new migration
+
+1. Write a function that takes the open connection and changes the schema. It must **never** call `commit()` or `executescript()`.
+2. Append it to `MIGRATIONS` with the next version number. Never edit, reorder or remove a migration that has already been released.
+3. Update the expected schema checked by `find_schema_problems()` and add upgrade tests.
+
 ---
 
 ## Project Structure
@@ -189,7 +356,7 @@ it-helpdesk-ticketing-system/
 ├── sla_storage.py
 ├── csv_export.py
 ├── setup_accounts.py
-├── migrate.py
+├── migrations.py
 ├── requirements.txt
 ├── .env.example
 ├── .gitignore
@@ -201,6 +368,9 @@ it-helpdesk-ticketing-system/
 │   ├── test_csrf.py
 │   ├── test_database_filters.py
 │   ├── test_logout.py
+│   ├── test_migrations.py
+│   ├── test_migration_cli.py
+│   ├── test_migration_upgrades.py
 │   ├── test_pagination_db.py
 │   ├── test_pagination_integration.py
 │   ├── test_pagination_route.py
@@ -226,13 +396,13 @@ it-helpdesk-ticketing-system/
 | File | Purpose |
 |---|---|
 | `app.py` | Flask application, routes and login logic |
-| `database.py` | SQLite tables, queries and ticket functions, including the SLA dashboard queries |
+| `database.py` | SQLite queries and ticket functions, including the SLA dashboard queries; `init_db()` runs the migrations |
 | `sla.py` | Response SLA policy: deadlines per priority and status rules |
 | `sla_storage.py` | Stores SLA deadlines and first responses; reads stored UTC timestamps |
 | `csv_export.py` | Builds safe CSV files from ticket rows |
 | `setup_accounts.py` | Initial administrator setup and password changes |
-| `migrate.py` | Migration from an earlier database structure |
-| `tests/` | 349 automated tests covering auth, CSRF, ownership, search, pagination, CSV export, history and SLA |
+| `migrations.py` | Versioned, transaction-safe schema migrations (replaces the retired `migrate.py`) |
+| `tests/` | 429 automated tests covering auth, CSRF, ownership, search, pagination, CSV export, history, SLA and migrations |
 
 The local `helpdesk.db` database and `.env` file are excluded from version control.
 
@@ -250,11 +420,15 @@ For example, visiting `/tickets/3` calls the route responsible for displaying ti
 
 SQLite stores application information in a local database file, `helpdesk.db`.
 
-The database contains three main tables:
+The database contains these tables:
 
 - `users` — usernames, password hashes and roles
 - `tickets` — support requests and their status
 - `comments` — notes associated with tickets
+- `ticket_history` — append-only activity events, protected by triggers
+- `ticket_sla` — response deadlines and first responses
+
+The schema version is recorded in the file itself (`PRAGMA user_version`); see [Database Schema and Migrations](#database-schema-and-migrations).
 
 ### Jinja2
 
@@ -436,7 +610,7 @@ The SLA cards, rows and filter use exactly the same ownership rule as the ticket
 
 ## Automated Testing
 
-The project includes 349 automated tests using Python's built-in `unittest` framework.
+The project includes 429 automated tests using Python's built-in `unittest` framework.
 
 To run the full suite:
 
@@ -479,6 +653,9 @@ python -m unittest tests.test_search_route -v
 | `test_sla_integration.py` | 44 | SLA creation, first responses, rollback and the ticket page |
 | `test_sla_dashboard_db.py` | 36 | SLA classification in SQL, boundaries, stored formats, counts, filters, pagination and query plans |
 | `test_sla_dashboard_routes.py` | 37 | Full dashboard requests: cards, filters, pagination, ownership, malicious input and CSV export |
+| `test_migrations.py` | 33 | Versioning, ordering, repeatability, rollback, validation, foreign keys, triggers, concurrency, backups, retired script |
+| `test_migration_upgrades.py` | 23 | Synthetic copies of every historical schema upgraded with data preserved, and the app running on them |
+| `test_migration_cli.py` | 24 | `init-db` and `db-status` output and exit codes, startup check, 503 readiness response, account setup guard |
 
 Tests never touch the real `helpdesk.db`:
 
@@ -486,7 +663,7 @@ Tests never touch the real `helpdesk.db`:
 - **Route tests** mock the database functions, and point `DB_PATH` at a location that cannot be opened, so an accidental unmocked query fails loudly instead of reading real data.
 - **Integration tests** mock nothing. Each request runs through the real route, real SQL against a temporary database, and the real template, and several tests follow the rendered **Next** links page by page.
 
-Coverage is still not exhaustive. Load testing, concurrency testing and automated browser testing remain outstanding.
+Coverage is still not exhaustive. Concurrent migration attempts are tested, but general load testing, request-level concurrency testing and automated browser testing remain outstanding.
 
 ---
 
@@ -497,7 +674,8 @@ Coverage is still not exhaustive. Load testing, concurrency testing and automate
 | Security area | Current status |
 |---|---|
 | Password hashing | Implemented |
-| Hardcoded account creation | Removed from database initialization |
+| Hardcoded account creation | Removed; the legacy `migrate.py` seeding script has been deleted |
+| Database migrations | Versioned, transactional, run explicitly by an operator; never seed accounts |
 | Initial administrator setup | Implemented as a local script |
 | Password changing | Implemented as a local script |
 | CSRF protection | Implemented on all state-changing forms |
@@ -509,7 +687,7 @@ Coverage is still not exhaustive. Load testing, concurrency testing and automate
 | HTTPS | Not configured |
 | Debug mode | Disabled (`debug=False`) |
 | Web-based account administration | Not implemented |
-| Automated security testing | 349 tests covering auth, CSRF, ownership, search, pagination, export, history and SLA |
+| Automated security testing | 429 tests covering auth, CSRF, ownership, search, pagination, export, history, SLA and migrations |
 
 Existing databases may still contain old demonstration credentials. Those passwords must be changed before relying on the updated authentication process.
 
@@ -527,6 +705,8 @@ Security improvements are ongoing.
 - No end-to-end browser testing
 - No load or concurrency testing
 - Not configured for production deployment
+- No "down" migrations; recovery from a bad upgrade means restoring a backup
+- On databases first upgraded by the retired `migrate.py`, `tickets.updated_at` has no default, so new tickets show "Not recorded" until they are first updated. Fixing the default would require rebuilding the table.
 
 ---
 

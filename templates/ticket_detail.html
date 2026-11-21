@@ -101,7 +101,8 @@
         </p>
 
         <p class="mb-0">
-          {{ ticket['updated_at'][:16] }}
+          {# NULL on databases where updated_at was added by ALTER TABLE #}
+          {{ ticket['updated_at'][:16] if ticket['updated_at'] else 'Not recorded' }}
         </p>
 
       </div>
