@@ -30,6 +30,10 @@ class TestAccountSetup(unittest.TestCase):
         db_patcher.start()
         self.addCleanup(db_patcher.stop)
 
+        # setup_accounts.py requires a migrated schema, exactly as after
+        # running "flask --app app init-db"
+        db.init_db()
+
     def create_test_admin(self, password):
         # Create a user using a test password
         db.init_db()

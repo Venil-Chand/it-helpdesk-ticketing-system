@@ -45,7 +45,7 @@ jobs:
       # Step 4: Check Python syntax
       - name: Check Python syntax
         run: |
-          python -m compileall -q app.py database.py setup_accounts.py sla.py sla_storage.py
+          python -m compileall -q app.py database.py migrations.py setup_accounts.py sla.py sla_storage.py
 
       # Step 5: Run automated tests
       - name: Run unit tests

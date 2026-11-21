@@ -11,14 +11,31 @@ from werkzeug.security import (
     check_password_hash
 )
 
+import sys
+
 import database as db
+import migrations
 
 
 def setup_account():
-    """Create the first administrator or change an existing password."""
+    """
+    Create the first administrator or change an existing password.
 
-    # Ensure database tables exist
-    db.init_db()
+    The database schema must already be up to date. This script never
+    creates or upgrades it; run "flask --app app init-db" first, so that
+    schema changes only ever happen through the explicit migration step.
+
+    Returns False if the schema is not ready, otherwise None.
+    """
+
+    status = migrations.schema_status(db.DB_PATH)
+
+    if not status.is_current:
+        print(
+            "The database schema is not up to date. "
+            "Run 'flask --app app init-db' first."
+        )
+        return False
 
     # Connect to the SQLite database
     conn = db.get_db()
@@ -140,4 +157,5 @@ def setup_account():
 
 # Run the account management program
 if __name__ == "__main__":
-    setup_account()
+    if setup_account() is False:
+        sys.exit(1)
