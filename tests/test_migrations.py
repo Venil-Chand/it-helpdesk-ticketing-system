@@ -171,7 +171,7 @@ class TestRepeatableMigrations(TempDatabase, unittest.TestCase):
 
         result = migrations.migrate(self.path)
 
-        self.assertEqual([m.version for m in result.applied], [3, 4])
+        self.assertEqual([m.version for m in result.applied], [3, 4, 5])
         self.assertEqual(self.version(), SCHEMA_VERSION)
 
 
@@ -523,7 +523,7 @@ class TestSchemaStatus(TempDatabase, unittest.TestCase):
 
         self.assertEqual(status.state, "outdated")
         self.assertEqual(status.version, 3)
-        self.assertEqual([m.version for m in status.pending], [4])
+        self.assertEqual([m.version for m in status.pending], [4, 5])
 
     def test_current_database(self):
         migrations.migrate(self.path)

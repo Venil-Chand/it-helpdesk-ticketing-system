@@ -511,7 +511,12 @@ class TestUpgradeUnversionedCurrentSchema(UpgradeTestCase):
         migrations.migrate(self.path)
 
         self.assert_fully_migrated()
-        self.assertEqual(self.schema(), schema)
+
+        # Migration 5 adds users.is_active; nothing else may change
+        def without_users(objects):
+            return [item for item in objects if item[1] != "users"]
+
+        self.assertEqual(without_users(self.schema()), without_users(schema))
         self.assertEqual(
             self.rows("SELECT * FROM ticket_sla ORDER BY ticket_id"), sla
         )
