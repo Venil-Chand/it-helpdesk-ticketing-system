@@ -14,6 +14,7 @@ version:
     3  append-only ticket activity history
     4  response SLA deadlines (ticket_sla)
     5  account activation status (users.is_active)
+    6  session revocation (users.session_version and its trigger)
 
 Each migration in MIGRATIONS moves the schema forward by exactly one
 version. migrate() applies every migration above the stored version, in
@@ -352,6 +353,57 @@ def _migration_5_account_activation(conn):
 
 
 # ---------------------------------------------------
+# MIGRATION 6: SESSION REVOCATION
+# ---------------------------------------------------
+
+def _migration_6_session_version(conn):
+    """
+    Add users.session_version, the counter that revokes login sessions.
+
+    A session is valid only while the version stored in its cookie equals
+    this value, so adding 1 ends every existing session for that account.
+
+    The trigger does this whenever a password or activation status changes,
+    including changes made outside the application with SQL. Reactivating
+    an account therefore cannot bring its old cookies back to life. It runs
+    inside the same transaction as the change that fired it.
+    """
+
+    if "session_version" not in _columns(conn, "users"):
+        conn.execute("""
+            ALTER TABLE users
+            ADD COLUMN session_version INTEGER NOT NULL DEFAULT 1
+            CHECK (typeof(session_version) = 'integer'
+                   AND session_version >= 1)
+        """)
+
+    else:
+        invalid = conn.execute("""
+            SELECT COUNT(*) FROM users
+            WHERE typeof(session_version) != 'integer'
+               OR session_version < 1
+        """).fetchone()[0]
+
+        if invalid:
+            raise IncompatibleSchemaError(
+                "users.session_version contains invalid values"
+            )
+
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS users_revoke_sessions
+        AFTER UPDATE OF password_hash, is_active ON users
+        FOR EACH ROW
+        WHEN OLD.password_hash IS NOT NEW.password_hash
+          OR OLD.is_active IS NOT NEW.is_active
+        BEGIN
+            UPDATE users
+            SET session_version = session_version + 1
+            WHERE id = NEW.id;
+        END
+    """)
+
+
+# ---------------------------------------------------
 # MIGRATION REGISTRY
 # ---------------------------------------------------
 
@@ -366,6 +418,7 @@ MIGRATIONS = (
     Migration(4, "Add response SLA deadlines", _migration_4_ticket_sla),
     Migration(5, "Add account activation status",
               _migration_5_account_activation),
+    Migration(6, "Add session revocation", _migration_6_session_version),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1].version
@@ -395,7 +448,7 @@ _check_registry(MIGRATIONS)
 _REQUIRED_COLUMNS = {
     "users": {
         "id": False, "username": True, "password_hash": True, "role": True,
-        "is_active": True,
+        "is_active": True, "session_version": True,
     },
     "tickets": {
         "id": False, "title": True, "description": True,
@@ -447,6 +500,15 @@ _INDEXES = {
     ),
 }
 
+# Text the session revocation trigger must contain, after normalising
+_SESSION_TRIGGER = "users_revoke_sessions"
+_SESSION_TRIGGER_PARTS = (
+    "AFTER UPDATE OF PASSWORD_HASH, IS_ACTIVE ON USERS",
+    "OLD.PASSWORD_HASH IS NOT NEW.PASSWORD_HASH",
+    "OLD.IS_ACTIVE IS NOT NEW.IS_ACTIVE",
+    "SET SESSION_VERSION = SESSION_VERSION + 1 WHERE ID = NEW.ID",
+)
+
 # trigger -> the event it must block on ticket_history
 _TRIGGERS = {
     "ticket_history_no_update": "BEFORE UPDATE ON TICKET_HISTORY",
@@ -493,6 +555,29 @@ def find_schema_problems(conn):
         if "CHECK(IS_ACTIVE IN(0, 1))" not in _object_sql(conn, "table",
                                                           "users"):
             problems.append("users.is_active is missing its CHECK")
+
+    if "users" in tables:
+        users_sql = _object_sql(conn, "table", "users")
+
+        # Without AUTOINCREMENT SQLite can reuse a deleted user's id, and
+        # that user's old cookie would then match the new account
+        if "AUTOINCREMENT" not in users_sql:
+            problems.append("users.id must use AUTOINCREMENT")
+
+        if "session_version" in _columns(conn, "users") and (
+            "CHECK(TYPEOF(SESSION_VERSION) = 'INTEGER' "
+            "AND SESSION_VERSION >= 1)"
+        ) not in users_sql:
+            problems.append("users.session_version is missing its CHECK")
+
+        trigger_sql = _object_sql(conn, "trigger", _SESSION_TRIGGER)
+
+        if not trigger_sql:
+            problems.append(f"missing trigger {_SESSION_TRIGGER}")
+        elif not all(part in trigger_sql for part in _SESSION_TRIGGER_PARTS):
+            problems.append(
+                f"trigger {_SESSION_TRIGGER} has unexpected behaviour"
+            )
 
     if "ticket_history" in tables:
         sql = _object_sql(conn, "table", "ticket_history")
