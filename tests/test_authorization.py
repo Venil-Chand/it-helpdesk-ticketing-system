@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from app import app
+from tests.auth_helpers import sign_in
 
 
 class TestAuthorization(unittest.TestCase):
@@ -28,9 +29,7 @@ class TestAuthorization(unittest.TestCase):
 
     def login_as(self, role):
         # Simulate a user with a particular role
-        with self.client.session_transaction() as session:
-            session["username"] = "test_user"
-            session["role"] = role
+        sign_in(self, self.client, "test_user", role)
 
     def get_csrf_token(self):
         # Retrieve a valid token from the new-ticket page

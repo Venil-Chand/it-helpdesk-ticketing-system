@@ -6,6 +6,7 @@ from unittest.mock import ANY, patch
 
 import database as db
 from app import app
+from tests.auth_helpers import sign_in
 
 
 class TestTicketOwnership(unittest.TestCase):
@@ -62,9 +63,7 @@ class TestTicketOwnership(unittest.TestCase):
 
     def login_as(self, username, role):
         # Simulate a logged-in user
-        with self.client.session_transaction() as session:
-            session["username"] = username
-            session["role"] = role
+        sign_in(self, self.client, username, role)
 
     def test_owner_can_view_own_ticket(self):
         # Alice should be able to view her ticket

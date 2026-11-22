@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 import database as db
 from app import app
+from tests.auth_helpers import sign_in
 
 
 def event(action, actor, old=None, new=None, role=None, event_id=1,
@@ -61,9 +62,7 @@ class TestHistoryTimeline(unittest.TestCase):
         app.config["TESTING"] = self.old_testing
 
     def render(self, history, username="alice", role="user"):
-        with self.client.session_transaction() as sess:
-            sess["username"] = username
-            sess["role"] = role
+        sign_in(self, self.client, username, role)
 
         with patch("app.db.get_ticket", return_value=self.ticket), \
                 patch("app.db.get_comments", return_value=[]), \

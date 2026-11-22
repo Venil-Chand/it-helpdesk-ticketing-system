@@ -3,6 +3,7 @@ import re
 import unittest
 
 from app import app
+from tests.auth_helpers import sign_in
 
 
 class TestSecureLogout(unittest.TestCase):
@@ -20,9 +21,7 @@ class TestSecureLogout(unittest.TestCase):
         self.client = app.test_client()
 
         # Simulate a logged-in administrator
-        with self.client.session_transaction() as session:
-            session["username"] = "test_user"
-            session["role"] = "admin"
+        sign_in(self, self.client, "test_user", "admin")
 
     def tearDown(self):
         # Restore the original application settings
@@ -43,7 +42,7 @@ class TestSecureLogout(unittest.TestCase):
 
         # User should remain logged in
         with self.client.session_transaction() as session:
-            self.assertEqual(session.get("username"), "test_user")
+            self.assertIn("user_id", session)
 
     def test_logout_with_invalid_csrf_rejected(self):
         # An incorrect token must be rejected
@@ -85,7 +84,7 @@ class TestSecureLogout(unittest.TestCase):
 
         # Confirm the user session was cleared
         with self.client.session_transaction() as session:
-            self.assertNotIn("username", session)
+            self.assertNotIn("user_id", session)
             self.assertNotIn("role", session)
 
 

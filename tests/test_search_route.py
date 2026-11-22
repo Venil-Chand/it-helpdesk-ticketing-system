@@ -25,6 +25,7 @@ from unittest.mock import ANY, patch
 
 import database as db
 from app import app
+from tests.auth_helpers import sign_in
 
 
 class TestSearchRoute(unittest.TestCase):
@@ -98,9 +99,7 @@ class TestSearchRoute(unittest.TestCase):
 
     def login_as(self, username, role):
         """Simulate a logged-in user with the given role."""
-        with self.client.session_transaction() as sess:
-            sess["username"] = username
-            sess["role"] = role
+        sign_in(self, self.client, username, role)
 
     def dashboard_mocks(self, tickets, total=None):
         """Patches for every database call the dashboard makes."""

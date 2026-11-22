@@ -22,6 +22,7 @@ import database as db
 import migrations
 from app import app, schema_ready_for_startup
 from migrations import SCHEMA_VERSION
+from tests.auth_helpers import sign_in
 
 
 def _make_pre_sla_database(path, password_hash):
@@ -340,9 +341,7 @@ class TestReadinessResponse(CliTestCase):
         self.client = app.test_client()
 
     def login(self, username="alice", role="user"):
-        with self.client.session_transaction() as session:
-            session["username"] = username
-            session["role"] = role
+        sign_in(self, self.client, username, role)
 
     def test_outdated_schema_returns_explained_503(self):
         _make_pre_sla_database(self.path, "hash")

@@ -20,6 +20,7 @@ import math
 import os
 import sqlite3
 import sys
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import click
@@ -32,7 +33,8 @@ from flask import (
     url_for,
     session,
     flash,
-    abort
+    abort,
+    g
 )
 
 from flask_wtf.csrf import CSRFProtect
@@ -149,10 +151,94 @@ def format_utc_time(value):
 # AUTHENTICATION AND AUTHORIZATION HELPERS
 # ---------------------------------------------------
 
-def logged_in():
-    """Check whether the user is logged in."""
+# Roles with access to every ticket. Any other value, including an
+# unrecognised one, gets only the access of an ordinary user.
+STAFF_ROLES = frozenset({"technician", "admin"})
 
-    return "username" in session
+# These never need the account: static files are public, and logging out
+# must keep working even while the database is unavailable.
+ACCOUNT_CHECK_EXEMPT_ENDPOINTS = frozenset({"static", "logout"})
+
+
+@dataclass(frozen=True)
+class CurrentUser:
+    """The signed-in account, as the database says it is right now."""
+
+    id: int
+    username: str
+    role: str
+
+    @property
+    def is_staff(self):
+        return self.role in STAFF_ROLES
+
+
+def reject_session():
+    """Discard a session that can no longer be trusted."""
+
+    session.clear()
+    g.user = None
+    g.session_rejected = True
+
+
+@app.before_request
+def load_current_user():
+    """
+    Load the signed-in account from SQLite before every view.
+
+    The cookie only says WHO the visitor claims to be. Whether the account
+    still exists, is active, and what role it has always comes from the
+    database. A failed lookup returns a 503 and never grants access; the
+    session is kept so a brief database outage does not log everyone out.
+    """
+
+    g.user = None
+    g.session_rejected = False
+
+    if (
+        request.endpoint is None
+        or request.endpoint in ACCOUNT_CHECK_EXEMPT_ENDPOINTS
+    ):
+        return None
+
+    # Sessions from before this check stored a username and a role that
+    # may be out of date, so neither is trusted or converted
+    if "username" in session or "role" in session:
+        reject_session()
+        return None
+
+    user_id = session.get("user_id")
+
+    if user_id is None:
+        return None
+
+    # bool is a subclass of int, so it is excluded by the exact type check
+    if type(user_id) is not int or user_id <= 0:
+        reject_session()
+        return None
+
+    try:
+        account = db.get_user_by_id(user_id)
+    except sqlite3.Error as error:
+        return authentication_unavailable(error)
+
+    if account is None or account["is_active"] != 1:
+        reject_session()
+        return None
+
+    g.user = CurrentUser(
+        id=account["id"],
+        username=account["username"],
+        role=account["role"]
+    )
+
+    return None
+
+
+def logged_in():
+    """Check whether this request has a verified, active account."""
+
+    return g.get("user") is not None
 
 
 def require_login():
@@ -160,10 +246,12 @@ def require_login():
 
     if not logged_in():
 
-        flash(
-            "Please log in first.",
-            "warning"
-        )
+        if g.get("session_rejected"):
+            message = "Your session is no longer valid. Please log in again."
+        else:
+            message = "Please log in first."
+
+        flash(message, "warning")
 
         return redirect(url_for("login"))
 
@@ -173,10 +261,7 @@ def require_login():
 def is_tech_or_admin():
     """Check whether the user has a support staff role."""
 
-    return session.get("role") in (
-        "technician",
-        "admin"
-    )
+    return logged_in() and g.user.is_staff
 
 
 def can_view_ticket(ticket):
@@ -191,7 +276,7 @@ def can_view_ticket(ticket):
         return True
 
     # Regular users can view only their own tickets
-    return ticket["created_by"] == session.get("username")
+    return logged_in() and ticket["created_by"] == g.user.username
 
 
 # ---------------------------------------------------
@@ -296,21 +381,25 @@ def login():
             "password", ""
         )
 
-        # Find the user in the database
-        user = db.get_user(username)
+        # Find the user in the database. If that fails, nobody signs in.
+        try:
+            user = db.get_user(username)
+        except sqlite3.Error as error:
+            return authentication_unavailable(error)
 
-        # Verify the password hash
+        # Verify the password hash first, so a deactivated account gets
+        # exactly the same response as a wrong password
         if user and check_password_hash(
             user["password_hash"],
             password
-        ):
+        ) and user["is_active"] == 1:
 
             # Clear previous session data
             session.clear()
 
             # Store authenticated user information
-            session["username"] = user["username"]
-            session["role"] = user["role"]
+            # Only the stable id: role and status are read on each request
+            session["user_id"] = user["id"]
 
             flash(
                 f"Welcome back, {user['username']}!",
@@ -351,11 +440,11 @@ def logout():
 
 def current_ticket_filters():
     """
-    Read the search and filters from the URL, and ownership from the session.
+    Read the search and filters from the URL, and ownership from the account.
 
     The dashboard and the CSV export both use this, so they can never
     disagree about which tickets a user may see. Ownership comes only
-    from the login session; URL parameters such as ?username= or ?role=
+    from the verified account in g.user; URL parameters such as ?username= or ?role=
     are never read.
     """
 
@@ -367,7 +456,7 @@ def current_ticket_filters():
     if is_tech_or_admin():
         owner = None
     else:
-        owner = session["username"]
+        owner = g.user.username
 
     # Unknown or missing ?sla= values mean "no SLA filter"
     sla_filter = SLA_FILTERS.get(request.args.get("sla", ""), "All")
@@ -573,7 +662,7 @@ def new_ticket():
                 title,
                 description,
                 priority,
-                session["username"]
+                g.user.username
             )
 
             flash(
@@ -702,12 +791,12 @@ def update_ticket(ticket_id):
     else:
 
         # Update the ticket and record each change in one transaction.
-        # The actor always comes from the login session, never the form.
+        # The actor is always the verified account, never a form value.
         changes = db.update_ticket(
             ticket_id,
             status,
             assigned_to,
-            actor=session["username"]
+            actor=g.user.username
         )
 
         if changes is None:
@@ -779,7 +868,7 @@ def add_comment(ticket_id):
         # Save the comment
         db.add_comment(
             ticket_id,
-            session["username"],
+            g.user.username,
             content
         )
 
@@ -809,25 +898,29 @@ SCHEMA_NOT_READY_MESSAGE = (
 )
 
 
-@app.errorhandler(sqlite3.OperationalError)
-def database_not_ready(error):
+# Shown when an account cannot be verified for any other database reason.
+AUTH_UNAVAILABLE_MESSAGE = (
+    "The helpdesk cannot verify your account right now. "
+    "Please try again shortly.\n"
+)
+
+
+def schema_not_ready_response():
     """
-    Turn "no such table" style failures into an explained 503.
+    Return an explained 503 if the schema is not ready, otherwise None.
 
     Web workers never migrate the database themselves; migrations are an
-    explicit deployment step ("flask --app app init-db"). If a query fails
-    and the schema is not at the expected version, the visitor gets a 503
-    and the log says exactly what the administrator must do. Any other
-    database error is re-raised and handled as before.
+    explicit deployment step ("flask --app app init-db"). The visitor gets
+    a 503 and the log says exactly what the administrator must do.
     """
 
     try:
         status = migrations.schema_status(db.DB_PATH)
     except Exception:
-        status = None
+        return None
 
-    if status is None or status.is_current:
-        raise error
+    if status.is_current:
+        return None
 
     app.logger.error(
         "Database schema is not ready (state=%s, version=%s, expected=%s). "
@@ -840,6 +933,42 @@ def database_not_ready(error):
         status=503,
         content_type="text/plain; charset=utf-8",
         headers={"Cache-Control": "no-store", "Retry-After": "60"}
+    )
+
+
+@app.errorhandler(sqlite3.OperationalError)
+def database_not_ready(error):
+    """
+    Turn "no such table" style failures into an explained 503.
+
+    Any database error that is not caused by the schema is re-raised and
+    handled as before.
+    """
+
+    response = schema_not_ready_response()
+
+    if response is None:
+        raise error
+
+    return response
+
+
+def authentication_unavailable(error):
+    """
+    Refuse a request whose account could not be checked (fail closed).
+
+    Only the error type is logged, and the visitor sees no database detail.
+    """
+
+    app.logger.error(
+        "Account verification failed: %s", type(error).__name__
+    )
+
+    return schema_not_ready_response() or Response(
+        AUTH_UNAVAILABLE_MESSAGE,
+        status=503,
+        content_type="text/plain; charset=utf-8",
+        headers={"Cache-Control": "no-store", "Retry-After": "30"}
     )
 
 
