@@ -923,17 +923,46 @@ def get_sla_stats(username=None, now=None):
 # ---------------------------------------------------
 
 def get_user(username):
-    """Retrieve a user using their username."""
+    """
+    Retrieve a user's login details using their username.
+
+    The columns are named so that a database missing is_active raises an
+    error here, instead of returning a row the login check cannot read.
+    """
 
     conn = get_db()
 
     try:
         user = conn.execute(
-            "SELECT * FROM users WHERE username = ?",
+            """
+            SELECT id, username, password_hash, role, is_active
+            FROM users
+            WHERE username = ?
+            """,
             (username,)
         ).fetchone()
 
         return user
+
+    finally:
+        conn.close()
+
+
+def get_user_by_id(user_id):
+    """
+    Retrieve the current account for a login session.
+
+    The password hash is deliberately not selected: this row is kept for
+    the whole request and never needs it.
+    """
+
+    conn = get_db()
+
+    try:
+        return conn.execute(
+            "SELECT id, username, role, is_active FROM users WHERE id = ?",
+            (user_id,)
+        ).fetchone()
 
     finally:
         conn.close()

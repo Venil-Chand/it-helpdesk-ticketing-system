@@ -20,6 +20,7 @@ from werkzeug.security import generate_password_hash
 
 import database as db
 from app import app
+from tests.auth_helpers import sign_in
 
 
 class TestHistoryRoutes(unittest.TestCase):
@@ -69,9 +70,7 @@ class TestHistoryRoutes(unittest.TestCase):
     # -----------------------------------------------------
 
     def login_as(self, username, role):
-        with self.client.session_transaction() as sess:
-            sess["username"] = username
-            sess["role"] = role
+        sign_in(self, self.client, username, role)
 
     def create_ticket_as(self, username, title="Printer offline"):
         """Create a ticket through the real form; return its id."""

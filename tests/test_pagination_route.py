@@ -20,6 +20,7 @@ from urllib.parse import parse_qs, urlparse
 
 import database as db
 from app import app, build_pagination, page_window, parse_page
+from tests.auth_helpers import sign_in
 
 
 class TestParsePage(unittest.TestCase):
@@ -189,9 +190,7 @@ class TestDashboardPaginationRoute(unittest.TestCase):
         app.config["TESTING"] = self.old_testing
 
     def login_as(self, username, role):
-        with self.client.session_transaction() as sess:
-            sess["username"] = username
-            sess["role"] = role
+        sign_in(self, self.client, username, role)
 
     def get_dashboard(self, url, total=25):
         """Request the dashboard with every database call mocked."""

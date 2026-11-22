@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from app import app
+from tests.auth_helpers import sign_in
 
 
 class TestCSRFProtection(unittest.TestCase):
@@ -27,9 +28,7 @@ class TestCSRFProtection(unittest.TestCase):
 
     def login_session(self):
         # Simulate an authenticated user
-        with self.client.session_transaction() as session:
-            session["username"] = "test_user"
-            session["role"] = "admin"
+        sign_in(self, self.client, "test_user", "admin")
 
     def test_login_without_csrf_token(self):
         response = self.client.post(

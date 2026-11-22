@@ -18,6 +18,7 @@ from unittest.mock import ANY, patch
 
 import database as db
 from app import app
+from tests.auth_helpers import sign_in
 
 
 TICKET = {
@@ -59,9 +60,7 @@ class CsvRouteTestCase(unittest.TestCase):
         app.config["TESTING"] = self.old_testing
 
     def login_as(self, username, role):
-        with self.client.session_transaction() as sess:
-            sess["username"] = username
-            sess["role"] = role
+        sign_in(self, self.client, username, role)
 
 
 class TestCsvExportRoute(CsvRouteTestCase):

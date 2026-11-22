@@ -23,6 +23,7 @@ from werkzeug.security import generate_password_hash
 
 import database as db
 from app import app
+from tests.auth_helpers import sign_in
 from sla import SLA_TARGETS, is_qualifying_response
 from sla_storage import parse_stored_utc
 
@@ -467,9 +468,7 @@ class TestSLARoutes(TempDatabaseMixin, unittest.TestCase):
             app.config["WTF_CSRF_ENABLED"] = self.old_csrf
 
     def login_as(self, username, role):
-        with self.client.session_transaction() as sess:
-            sess["username"] = username
-            sess["role"] = role
+        sign_in(self, self.client, username, role)
 
     def create_ticket_as(self, username, priority="High"):
         self.login_as(username, "user")

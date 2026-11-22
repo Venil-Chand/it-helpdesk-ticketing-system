@@ -13,6 +13,7 @@ version:
     2  ticket list indexes
     3  append-only ticket activity history
     4  response SLA deadlines (ticket_sla)
+    5  account activation status (users.is_active)
 
 Each migration in MIGRATIONS moves the schema forward by exactly one
 version. migrate() applies every migration above the stored version, in
@@ -329,6 +330,28 @@ def _migration_4_ticket_sla(conn):
 
 
 # ---------------------------------------------------
+# MIGRATION 5: ACCOUNT ACTIVATION STATUS
+# ---------------------------------------------------
+
+def _migration_5_account_activation(conn):
+    """
+    Add users.is_active: 1 = may sign in, 0 = deactivated.
+
+    Every existing account stays active, and its id, role and password
+    hash are untouched. ALTER TABLE ADD COLUMN does not rewrite those
+    values. A column that already exists is left alone here, and the
+    final schema validation rejects it if it lacks these constraints.
+    """
+
+    if "is_active" not in _columns(conn, "users"):
+        conn.execute("""
+            ALTER TABLE users
+            ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1
+            CHECK (is_active IN (0, 1))
+        """)
+
+
+# ---------------------------------------------------
 # MIGRATION REGISTRY
 # ---------------------------------------------------
 
@@ -341,6 +364,8 @@ MIGRATIONS = (
     Migration(3, "Add append-only ticket activity history",
               _migration_3_ticket_history),
     Migration(4, "Add response SLA deadlines", _migration_4_ticket_sla),
+    Migration(5, "Add account activation status",
+              _migration_5_account_activation),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1].version
@@ -370,6 +395,7 @@ _check_registry(MIGRATIONS)
 _REQUIRED_COLUMNS = {
     "users": {
         "id": False, "username": True, "password_hash": True, "role": True,
+        "is_active": True,
     },
     "tickets": {
         "id": False, "title": True, "description": True,
@@ -462,6 +488,11 @@ def find_schema_problems(conn):
     if "users" in tables and not _has_unique_index(conn, "users",
                                                    ["username"]):
         problems.append("users.username must be UNIQUE")
+
+    if "users" in tables and "is_active" in _columns(conn, "users"):
+        if "CHECK(IS_ACTIVE IN(0, 1))" not in _object_sql(conn, "table",
+                                                          "users"):
+            problems.append("users.is_active is missing its CHECK")
 
     if "ticket_history" in tables:
         sql = _object_sql(conn, "table", "ticket_history")

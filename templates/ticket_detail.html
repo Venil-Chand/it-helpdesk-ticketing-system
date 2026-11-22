@@ -110,7 +110,7 @@
 
 
     <!-- Update form: Technicians and administrators only -->
-    {% if session.get('role') in ('technician', 'admin') %}
+    {% if g.user and g.user.is_staff %}
 
     <div class="card shadow-sm border-0">
 

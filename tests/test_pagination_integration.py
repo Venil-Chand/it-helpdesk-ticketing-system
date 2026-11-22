@@ -21,6 +21,7 @@ from urllib.parse import parse_qs, urlparse
 
 import database as db
 from app import app
+from tests.auth_helpers import sign_in
 
 
 class TestPaginationIntegration(unittest.TestCase):
@@ -52,9 +53,7 @@ class TestPaginationIntegration(unittest.TestCase):
     # -----------------------------------------------------
 
     def login_as(self, username, role):
-        with self.client.session_transaction() as sess:
-            sess["username"] = username
-            sess["role"] = role
+        sign_in(self, self.client, username, role)
 
     def add_ticket(
         self,

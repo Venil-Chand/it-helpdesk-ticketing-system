@@ -20,7 +20,9 @@ import math
 import os
 import sqlite3
 import sys
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import wraps
 
 import click
 from flask import (
@@ -32,7 +34,8 @@ from flask import (
     url_for,
     session,
     flash,
-    abort
+    abort,
+    g
 )
 
 from flask_wtf.csrf import CSRFProtect
@@ -149,34 +152,150 @@ def format_utc_time(value):
 # AUTHENTICATION AND AUTHORIZATION HELPERS
 # ---------------------------------------------------
 
-def logged_in():
-    """Check whether the user is logged in."""
+# Roles with access to every ticket. Any other value, including an
+# unrecognised one, gets only the access of an ordinary user.
+STAFF_ROLES = frozenset({"technician", "admin"})
 
-    return "username" in session
+# These never need the account: static files are public, and logging out
+# must keep working even while the database is unavailable.
+ACCOUNT_CHECK_EXEMPT_ENDPOINTS = frozenset({"static", "logout"})
 
 
-def require_login():
-    """Redirect unauthenticated visitors to login."""
+@dataclass(frozen=True)
+class CurrentUser:
+    """The signed-in account, as the database says it is right now."""
 
-    if not logged_in():
+    id: int
+    username: str
+    role: str
 
-        flash(
-            "Please log in first.",
-            "warning"
-        )
+    @property
+    def is_staff(self):
+        return self.role in STAFF_ROLES
 
-        return redirect(url_for("login"))
+
+def reject_session():
+    """Discard a session that can no longer be trusted."""
+
+    session.clear()
+    g.user = None
+    g.session_rejected = True
+
+
+@app.before_request
+def load_current_user():
+    """
+    Load the signed-in account from SQLite before every view.
+
+    The cookie only says WHO the visitor claims to be. Whether the account
+    still exists, is active, and what role it has always comes from the
+    database. A failed lookup returns a 503 and never grants access; the
+    session is kept so a brief database outage does not log everyone out.
+    """
+
+    g.user = None
+    g.session_rejected = False
+
+    if (
+        request.endpoint is None
+        or request.endpoint in ACCOUNT_CHECK_EXEMPT_ENDPOINTS
+    ):
+        return None
+
+    # Sessions from before this check stored a username and a role that
+    # may be out of date, so neither is trusted or converted
+    if "username" in session or "role" in session:
+        reject_session()
+        return None
+
+    user_id = session.get("user_id")
+
+    if user_id is None:
+        return None
+
+    # bool is a subclass of int, so it is excluded by the exact type check
+    if type(user_id) is not int or user_id <= 0:
+        reject_session()
+        return None
+
+    try:
+        account = db.get_user_by_id(user_id)
+    except sqlite3.Error as error:
+        return authentication_unavailable(error)
+
+    if account is None or account["is_active"] != 1:
+        reject_session()
+        return None
+
+    g.user = CurrentUser(
+        id=account["id"],
+        username=account["username"],
+        role=account["role"]
+    )
 
     return None
+
+
+def logged_in():
+    """Check whether this request has a verified, active account."""
+
+    return g.get("user") is not None
+
+
+def login_required(view):
+    """Allow a view only for a verified, active account."""
+
+    @wraps(view)
+    def wrapped_view(*args, **kwargs):
+
+        if not logged_in():
+
+            if g.get("session_rejected"):
+                message = (
+                    "Your session is no longer valid. Please log in again."
+                )
+            else:
+                message = "Please log in first."
+
+            flash(message, "warning")
+
+            return redirect(url_for("login"))
+
+        return view(*args, **kwargs)
+
+    return wrapped_view
+
+
+def staff_required(view):
+    """Allow a view only for technicians and administrators."""
+
+    @wraps(view)
+    def wrapped_view(*args, **kwargs):
+
+        if not is_tech_or_admin():
+
+            flash(
+                "Only technicians and admins can update ticket status.",
+                "danger"
+            )
+
+            if "ticket_id" in kwargs:
+                return redirect(
+                    url_for("ticket_detail", ticket_id=kwargs["ticket_id"])
+                )
+
+            return redirect(url_for("index"))
+
+        return view(*args, **kwargs)
+
+    # Signed-out visitors go to the login page before any role check
+    return login_required(wrapped_view)
 
 
 def is_tech_or_admin():
     """Check whether the user has a support staff role."""
 
-    return session.get("role") in (
-        "technician",
-        "admin"
-    )
+    return logged_in() and g.user.is_staff
 
 
 def can_view_ticket(ticket):
@@ -191,7 +310,23 @@ def can_view_ticket(ticket):
         return True
 
     # Regular users can view only their own tickets
-    return ticket["created_by"] == session.get("username")
+    return logged_in() and ticket["created_by"] == g.user.username
+
+
+def get_ticket_or_404(ticket_id):
+    """
+    Load a ticket the current user may access, or stop with a 404.
+
+    Missing tickets and other people's tickets get the same response, so
+    ticket numbers cannot be probed to learn which ones exist.
+    """
+
+    ticket = db.get_ticket(ticket_id)
+
+    if not can_view_ticket(ticket):
+        abort(404)
+
+    return ticket
 
 
 # ---------------------------------------------------
@@ -296,21 +431,25 @@ def login():
             "password", ""
         )
 
-        # Find the user in the database
-        user = db.get_user(username)
+        # Find the user in the database. If that fails, nobody signs in.
+        try:
+            user = db.get_user(username)
+        except sqlite3.Error as error:
+            return authentication_unavailable(error)
 
-        # Verify the password hash
+        # Verify the password hash first, so a deactivated account gets
+        # exactly the same response as a wrong password
         if user and check_password_hash(
             user["password_hash"],
             password
-        ):
+        ) and user["is_active"] == 1:
 
             # Clear previous session data
             session.clear()
 
             # Store authenticated user information
-            session["username"] = user["username"]
-            session["role"] = user["role"]
+            # Only the stable id: role and status are read on each request
+            session["user_id"] = user["id"]
 
             flash(
                 f"Welcome back, {user['username']}!",
@@ -351,11 +490,11 @@ def logout():
 
 def current_ticket_filters():
     """
-    Read the search and filters from the URL, and ownership from the session.
+    Read the search and filters from the URL, and ownership from the account.
 
     The dashboard and the CSV export both use this, so they can never
     disagree about which tickets a user may see. Ownership comes only
-    from the login session; URL parameters such as ?username= or ?role=
+    from the verified account in g.user; URL parameters such as ?username= or ?role=
     are never read.
     """
 
@@ -367,7 +506,7 @@ def current_ticket_filters():
     if is_tech_or_admin():
         owner = None
     else:
-        owner = session["username"]
+        owner = g.user.username
 
     # Unknown or missing ?sla= values mean "no SLA filter"
     sla_filter = SLA_FILTERS.get(request.args.get("sla", ""), "All")
@@ -386,14 +525,9 @@ def current_ticket_filters():
 # ---------------------------------------------------
 
 @app.route("/")
+@login_required
 def index():
     """Display one page of the tickets the current user may see."""
-
-    # Check whether the user is logged in
-    redir = require_login()
-
-    if redir:
-        return redir
 
     filters = current_ticket_filters()
 
@@ -484,13 +618,9 @@ def index():
 # ---------------------------------------------------
 
 @app.route("/tickets/export")
+@login_required
 def export_tickets():
     """Download every ticket the user may see that matches the filters."""
-
-    redir = require_login()
-
-    if redir:
-        return redir
 
     filters = current_ticket_filters()
 
@@ -529,13 +659,9 @@ def export_tickets():
 # ---------------------------------------------------
 
 @app.route("/tickets/new", methods=["GET", "POST"])
+@login_required
 def new_ticket():
     """Create a new IT support ticket."""
-
-    redir = require_login()
-
-    if redir:
-        return redir
 
     if request.method == "POST":
 
@@ -573,7 +699,7 @@ def new_ticket():
                 title,
                 description,
                 priority,
-                session["username"]
+                g.user.username
             )
 
             flash(
@@ -599,29 +725,14 @@ def new_ticket():
 # ---------------------------------------------------
 
 @app.route("/tickets/<int:ticket_id>")
+@login_required
 def ticket_detail(ticket_id):
     """Display a ticket only if the user is authorised."""
 
-    # Step 1: Check login
-    redir = require_login()
+    # Step 1: Retrieve the ticket, checking ownership or staff access
+    ticket = get_ticket_or_404(ticket_id)
 
-    if redir:
-        return redir
-
-    # Step 2: Retrieve the ticket
-    ticket = db.get_ticket(ticket_id)
-
-    # Step 3: Check whether the ticket exists
-    if ticket is None:
-
-        abort(404)
-
-    # Step 4: Check ticket ownership or staff access
-    if not can_view_ticket(ticket):
-
-        abort(404)
-
-    # Step 5: Retrieve comments and activity history.
+    # Step 2: Retrieve comments and activity history.
     # This runs only after the access check above, so history is
     # protected by exactly the same rule as the ticket itself.
     comments = db.get_comments(ticket_id)
@@ -640,7 +751,7 @@ def ticket_detail(ticket_id):
 
         all_users = []
 
-    # Step 6: Display ticket details
+    # Step 3: Display ticket details
     return render_template(
         "ticket_detail.html",
         ticket=ticket,
@@ -660,29 +771,9 @@ def ticket_detail(ticket_id):
     "/tickets/<int:ticket_id>/update",
     methods=["POST"]
 )
+@staff_required
 def update_ticket(ticket_id):
     """Update ticket status and technician assignment."""
-
-    # Check login
-    redir = require_login()
-
-    if redir:
-        return redir
-
-    # Only administrators and technicians may update tickets
-    if not is_tech_or_admin():
-
-        flash(
-            "Only technicians and admins can update ticket status.",
-            "danger"
-        )
-
-        return redirect(
-            url_for(
-                "ticket_detail",
-                ticket_id=ticket_id
-            )
-        )
 
     # Read submitted data
     status = request.form.get("status")
@@ -702,12 +793,12 @@ def update_ticket(ticket_id):
     else:
 
         # Update the ticket and record each change in one transaction.
-        # The actor always comes from the login session, never the form.
+        # The actor is always the verified account, never a form value.
         changes = db.update_ticket(
             ticket_id,
             status,
             assigned_to,
-            actor=session["username"]
+            actor=g.user.username
         )
 
         if changes is None:
@@ -740,29 +831,14 @@ def update_ticket(ticket_id):
     "/tickets/<int:ticket_id>/comment",
     methods=["POST"]
 )
+@login_required
 def add_comment(ticket_id):
     """Add a comment only to an authorised ticket."""
 
-    # Step 1: Check login
-    redir = require_login()
+    # Step 1: Stop unless this user may access the ticket
+    get_ticket_or_404(ticket_id)
 
-    if redir:
-        return redir
-
-    # Step 2: Retrieve the ticket
-    ticket = db.get_ticket(ticket_id)
-
-    # Step 3: Check that ticket exists
-    if ticket is None:
-
-        abort(404)
-
-    # Step 4: Verify access permissions
-    if not can_view_ticket(ticket):
-
-        abort(404)
-
-    # Step 5: Read submitted comment
+    # Step 2: Read submitted comment
     content = request.form.get(
         "content", ""
     ).strip()
@@ -779,7 +855,7 @@ def add_comment(ticket_id):
         # Save the comment
         db.add_comment(
             ticket_id,
-            session["username"],
+            g.user.username,
             content
         )
 
@@ -809,25 +885,29 @@ SCHEMA_NOT_READY_MESSAGE = (
 )
 
 
-@app.errorhandler(sqlite3.OperationalError)
-def database_not_ready(error):
+# Shown when an account cannot be verified for any other database reason.
+AUTH_UNAVAILABLE_MESSAGE = (
+    "The helpdesk cannot verify your account right now. "
+    "Please try again shortly.\n"
+)
+
+
+def schema_not_ready_response():
     """
-    Turn "no such table" style failures into an explained 503.
+    Return an explained 503 if the schema is not ready, otherwise None.
 
     Web workers never migrate the database themselves; migrations are an
-    explicit deployment step ("flask --app app init-db"). If a query fails
-    and the schema is not at the expected version, the visitor gets a 503
-    and the log says exactly what the administrator must do. Any other
-    database error is re-raised and handled as before.
+    explicit deployment step ("flask --app app init-db"). The visitor gets
+    a 503 and the log says exactly what the administrator must do.
     """
 
     try:
         status = migrations.schema_status(db.DB_PATH)
     except Exception:
-        status = None
+        return None
 
-    if status is None or status.is_current:
-        raise error
+    if status.is_current:
+        return None
 
     app.logger.error(
         "Database schema is not ready (state=%s, version=%s, expected=%s). "
@@ -840,6 +920,42 @@ def database_not_ready(error):
         status=503,
         content_type="text/plain; charset=utf-8",
         headers={"Cache-Control": "no-store", "Retry-After": "60"}
+    )
+
+
+@app.errorhandler(sqlite3.OperationalError)
+def database_not_ready(error):
+    """
+    Turn "no such table" style failures into an explained 503.
+
+    Any database error that is not caused by the schema is re-raised and
+    handled as before.
+    """
+
+    response = schema_not_ready_response()
+
+    if response is None:
+        raise error
+
+    return response
+
+
+def authentication_unavailable(error):
+    """
+    Refuse a request whose account could not be checked (fail closed).
+
+    Only the error type is logged, and the visitor sees no database detail.
+    """
+
+    app.logger.error(
+        "Account verification failed: %s", type(error).__name__
+    )
+
+    return schema_not_ready_response() or Response(
+        AUTH_UNAVAILABLE_MESSAGE,
+        status=503,
+        content_type="text/plain; charset=utf-8",
+        headers={"Cache-Control": "no-store", "Retry-After": "30"}
     )
 
 
