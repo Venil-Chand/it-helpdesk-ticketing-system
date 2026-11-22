@@ -548,14 +548,47 @@ def login():
 
 @app.route("/logout", methods=["POST"])
 def logout():
-    """End the current session using a CSRF-protected POST."""
+    """
+    End the session using a CSRF-protected POST.
+
+    A currently valid cookie also revokes every session for the account,
+    so copies of it stop working. The version is account-wide, which means
+    this signs the user out on all devices. Deactivated accounts can log
+    out too. This browser's session is always cleared, even if the
+    database cannot be updated.
+    """
+
+    claims = valid_session_claims()
+    revoked = False
+    revocation_failed = False
+
+    if claims is not None:
+        try:
+            revoked = db.revoke_user_sessions(*claims)
+        except sqlite3.Error as error:
+            revocation_failed = True
+            app.logger.error(
+                "Session revocation failed: %s", type(error).__name__
+            )
 
     session.clear()
 
-    flash(
-        "You have been logged out.",
-        "info"
-    )
+    if revocation_failed:
+        flash(
+            "You have been logged out of this browser, but your other "
+            "sessions could not be ended. Please contact an administrator.",
+            "warning"
+        )
+    elif revoked:
+        flash(
+            "You have been logged out on all devices.",
+            "info"
+        )
+    else:
+        flash(
+            "You have been logged out.",
+            "info"
+        )
 
     return redirect(url_for("login"))
 

@@ -1024,20 +1024,12 @@ class TestExistingProtections(AuthTestCase):
 
 
 # ---------------------------------------------------
-# DOCUMENTED BOUNDARY (DAY 32)
+# COPIED COOKIES
 # ---------------------------------------------------
 
-class TestKnownSessionBoundary(AuthTestCase):
+class TestCopiedCookies(AuthTestCase):
 
-    def test_copied_cookie_still_works_after_ordinary_logout(self):
-        """
-        Records a KNOWN LIMITATION rather than desired behaviour.
-
-        Flask sessions live in the signed cookie, so logout clears only
-        the browser that sent it. Full revocation is planned for Day 32;
-        this test should then be changed to expect a rejection.
-        """
-
+    def test_copied_cookie_is_rejected_after_logout(self):
         self.login("alice")
         copied = self.client.get_cookie("session").value
 
@@ -1047,7 +1039,7 @@ class TestKnownSessionBoundary(AuthTestCase):
         attacker = self.new_client()
         attacker.set_cookie("session", copied)
 
-        self.assertEqual(attacker.get("/").status_code, 200)
+        self.assert_sent_to_login(attacker.get("/"))
 
     def test_copied_cookie_stops_working_once_deactivated(self):
         self.login("alice")
