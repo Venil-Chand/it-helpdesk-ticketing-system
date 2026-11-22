@@ -22,6 +22,7 @@ import sqlite3
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import wraps
 
 import click
 from flask import (
@@ -241,21 +242,54 @@ def logged_in():
     return g.get("user") is not None
 
 
-def require_login():
-    """Redirect unauthenticated visitors to login."""
+def login_required(view):
+    """Allow a view only for a verified, active account."""
 
-    if not logged_in():
+    @wraps(view)
+    def wrapped_view(*args, **kwargs):
 
-        if g.get("session_rejected"):
-            message = "Your session is no longer valid. Please log in again."
-        else:
-            message = "Please log in first."
+        if not logged_in():
 
-        flash(message, "warning")
+            if g.get("session_rejected"):
+                message = (
+                    "Your session is no longer valid. Please log in again."
+                )
+            else:
+                message = "Please log in first."
 
-        return redirect(url_for("login"))
+            flash(message, "warning")
 
-    return None
+            return redirect(url_for("login"))
+
+        return view(*args, **kwargs)
+
+    return wrapped_view
+
+
+def staff_required(view):
+    """Allow a view only for technicians and administrators."""
+
+    @wraps(view)
+    def wrapped_view(*args, **kwargs):
+
+        if not is_tech_or_admin():
+
+            flash(
+                "Only technicians and admins can update ticket status.",
+                "danger"
+            )
+
+            if "ticket_id" in kwargs:
+                return redirect(
+                    url_for("ticket_detail", ticket_id=kwargs["ticket_id"])
+                )
+
+            return redirect(url_for("index"))
+
+        return view(*args, **kwargs)
+
+    # Signed-out visitors go to the login page before any role check
+    return login_required(wrapped_view)
 
 
 def is_tech_or_admin():
@@ -277,6 +311,22 @@ def can_view_ticket(ticket):
 
     # Regular users can view only their own tickets
     return logged_in() and ticket["created_by"] == g.user.username
+
+
+def get_ticket_or_404(ticket_id):
+    """
+    Load a ticket the current user may access, or stop with a 404.
+
+    Missing tickets and other people's tickets get the same response, so
+    ticket numbers cannot be probed to learn which ones exist.
+    """
+
+    ticket = db.get_ticket(ticket_id)
+
+    if not can_view_ticket(ticket):
+        abort(404)
+
+    return ticket
 
 
 # ---------------------------------------------------
@@ -475,14 +525,9 @@ def current_ticket_filters():
 # ---------------------------------------------------
 
 @app.route("/")
+@login_required
 def index():
     """Display one page of the tickets the current user may see."""
-
-    # Check whether the user is logged in
-    redir = require_login()
-
-    if redir:
-        return redir
 
     filters = current_ticket_filters()
 
@@ -573,13 +618,9 @@ def index():
 # ---------------------------------------------------
 
 @app.route("/tickets/export")
+@login_required
 def export_tickets():
     """Download every ticket the user may see that matches the filters."""
-
-    redir = require_login()
-
-    if redir:
-        return redir
 
     filters = current_ticket_filters()
 
@@ -618,13 +659,9 @@ def export_tickets():
 # ---------------------------------------------------
 
 @app.route("/tickets/new", methods=["GET", "POST"])
+@login_required
 def new_ticket():
     """Create a new IT support ticket."""
-
-    redir = require_login()
-
-    if redir:
-        return redir
 
     if request.method == "POST":
 
@@ -688,29 +725,14 @@ def new_ticket():
 # ---------------------------------------------------
 
 @app.route("/tickets/<int:ticket_id>")
+@login_required
 def ticket_detail(ticket_id):
     """Display a ticket only if the user is authorised."""
 
-    # Step 1: Check login
-    redir = require_login()
+    # Step 1: Retrieve the ticket, checking ownership or staff access
+    ticket = get_ticket_or_404(ticket_id)
 
-    if redir:
-        return redir
-
-    # Step 2: Retrieve the ticket
-    ticket = db.get_ticket(ticket_id)
-
-    # Step 3: Check whether the ticket exists
-    if ticket is None:
-
-        abort(404)
-
-    # Step 4: Check ticket ownership or staff access
-    if not can_view_ticket(ticket):
-
-        abort(404)
-
-    # Step 5: Retrieve comments and activity history.
+    # Step 2: Retrieve comments and activity history.
     # This runs only after the access check above, so history is
     # protected by exactly the same rule as the ticket itself.
     comments = db.get_comments(ticket_id)
@@ -729,7 +751,7 @@ def ticket_detail(ticket_id):
 
         all_users = []
 
-    # Step 6: Display ticket details
+    # Step 3: Display ticket details
     return render_template(
         "ticket_detail.html",
         ticket=ticket,
@@ -749,29 +771,9 @@ def ticket_detail(ticket_id):
     "/tickets/<int:ticket_id>/update",
     methods=["POST"]
 )
+@staff_required
 def update_ticket(ticket_id):
     """Update ticket status and technician assignment."""
-
-    # Check login
-    redir = require_login()
-
-    if redir:
-        return redir
-
-    # Only administrators and technicians may update tickets
-    if not is_tech_or_admin():
-
-        flash(
-            "Only technicians and admins can update ticket status.",
-            "danger"
-        )
-
-        return redirect(
-            url_for(
-                "ticket_detail",
-                ticket_id=ticket_id
-            )
-        )
 
     # Read submitted data
     status = request.form.get("status")
@@ -829,29 +831,14 @@ def update_ticket(ticket_id):
     "/tickets/<int:ticket_id>/comment",
     methods=["POST"]
 )
+@login_required
 def add_comment(ticket_id):
     """Add a comment only to an authorised ticket."""
 
-    # Step 1: Check login
-    redir = require_login()
+    # Step 1: Stop unless this user may access the ticket
+    get_ticket_or_404(ticket_id)
 
-    if redir:
-        return redir
-
-    # Step 2: Retrieve the ticket
-    ticket = db.get_ticket(ticket_id)
-
-    # Step 3: Check that ticket exists
-    if ticket is None:
-
-        abort(404)
-
-    # Step 4: Verify access permissions
-    if not can_view_ticket(ticket):
-
-        abort(404)
-
-    # Step 5: Read submitted comment
+    # Step 2: Read submitted comment
     content = request.form.get(
         "content", ""
     ).strip()
