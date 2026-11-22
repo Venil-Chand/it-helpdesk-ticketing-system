@@ -20,8 +20,9 @@ import math
 import os
 import sqlite3
 import sys
+import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import wraps
 
 import click
@@ -75,6 +76,14 @@ app.secret_key = _secret
 
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+
+# A login lasts at most this long, however active the user is. Activity
+# does not extend it: the login time is stored in the session and checked
+# on the server, and the browser cookie is not refreshed on each request.
+SESSION_MAX_LIFETIME = timedelta(hours=8)
+
+app.config["PERMANENT_SESSION_LIFETIME"] = SESSION_MAX_LIFETIME
+app.config["SESSION_REFRESH_EACH_REQUEST"] = False
 
 # Enable CSRF protection
 csrf = CSRFProtect(app)
@@ -160,6 +169,16 @@ STAFF_ROLES = frozenset({"technician", "admin"})
 # must keep working even while the database is unavailable.
 ACCOUNT_CHECK_EXEMPT_ENDPOINTS = frozenset({"static", "logout"})
 
+# Values the current session format stores, and older ones it replaces
+SESSION_CLAIMS = ("user_id", "session_version", "issued_at")
+LEGACY_SESSION_KEYS = ("username", "role")
+
+# Tolerates a small system clock correction between login and a request
+SESSION_CLOCK_SKEW_SECONDS = 60
+
+# Largest integer SQLite can store; larger values cannot be bound to a query
+SQLITE_MAX_INTEGER = 2 ** 63 - 1
+
 
 @dataclass(frozen=True)
 class CurrentUser:
@@ -182,15 +201,69 @@ def reject_session():
     g.session_rejected = True
 
 
+def current_time():
+    """The current time in whole seconds since the Unix epoch."""
+
+    return int(time.time())
+
+
+def is_positive_integer(value):
+    """Check for a real integer SQLite can store; bool does not count."""
+
+    return type(value) is int and 1 <= value <= SQLITE_MAX_INTEGER
+
+
+def session_has_identity():
+    """Check whether the session claims any login, valid or not."""
+
+    return any(
+        key in session for key in SESSION_CLAIMS + LEGACY_SESSION_KEYS
+    )
+
+
+def valid_session_claims():
+    """
+    Return (user_id, session_version) if the cookie is usable, else None.
+
+    This checks only what the cookie itself can prove: its format and its
+    age. The caller must still compare the version with the database.
+    """
+
+    # Older sessions stored a username and role that may be out of date,
+    # so neither is trusted or converted
+    if any(key in session for key in LEGACY_SESSION_KEYS):
+        return None
+
+    user_id = session.get("user_id")
+    version = session.get("session_version")
+    issued_at = session.get("issued_at")
+
+    if not all(map(is_positive_integer, (user_id, version, issued_at))):
+        return None
+
+    now = current_time()
+    max_age = int(app.permanent_session_lifetime.total_seconds())
+
+    if issued_at > now + SESSION_CLOCK_SKEW_SECONDS:
+        return None
+
+    if now - issued_at >= max_age:
+        return None
+
+    return user_id, version
+
+
 @app.before_request
 def load_current_user():
     """
     Load the signed-in account from SQLite before every view.
 
-    The cookie only says WHO the visitor claims to be. Whether the account
-    still exists, is active, and what role it has always comes from the
-    database. A failed lookup returns a 503 and never grants access; the
-    session is kept so a brief database outage does not log everyone out.
+    The cookie only says WHO the visitor claims to be and which session
+    version it was issued with. Whether the account still exists, is
+    active, has not revoked that version, and what role it has always
+    comes from the database. A failed lookup returns a 503 and never
+    grants access; the session is kept so a brief database outage does
+    not log everyone out.
     """
 
     g.user = None
@@ -202,28 +275,27 @@ def load_current_user():
     ):
         return None
 
-    # Sessions from before this check stored a username and a role that
-    # may be out of date, so neither is trusted or converted
-    if "username" in session or "role" in session:
+    if not session_has_identity():
+        return None
+
+    claims = valid_session_claims()
+
+    if claims is None:
         reject_session()
         return None
 
-    user_id = session.get("user_id")
-
-    if user_id is None:
-        return None
-
-    # bool is a subclass of int, so it is excluded by the exact type check
-    if type(user_id) is not int or user_id <= 0:
-        reject_session()
-        return None
+    user_id, session_version = claims
 
     try:
         account = db.get_user_by_id(user_id)
     except sqlite3.Error as error:
         return authentication_unavailable(error)
 
-    if account is None or account["is_active"] != 1:
+    if (
+        account is None
+        or account["is_active"] != 1
+        or account["session_version"] != session_version
+    ):
         reject_session()
         return None
 
@@ -448,8 +520,12 @@ def login():
             session.clear()
 
             # Store authenticated user information
-            # Only the stable id: role and status are read on each request
+            # Role and status are read from the database on each request.
+            # The version and time let this session be revoked and expire.
+            session.permanent = True
             session["user_id"] = user["id"]
+            session["session_version"] = user["session_version"]
+            session["issued_at"] = current_time()
 
             flash(
                 f"Welcome back, {user['username']}!",

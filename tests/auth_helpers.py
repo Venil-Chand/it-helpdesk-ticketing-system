@@ -8,6 +8,7 @@ fixtures. The real account checks are tested without this stub in
 test_database_authentication.py.
 """
 
+import time
 from unittest.mock import patch
 
 
@@ -33,11 +34,14 @@ def sign_in(test, client, username, role="user"):
         "username": username,
         "role": role,
         "is_active": 1,
+        "session_version": 1,
     }
 
     with client.session_transaction() as sess:
         sess.pop("username", None)
         sess.pop("role", None)
         sess["user_id"] = user_id
+        sess["session_version"] = accounts[user_id]["session_version"]
+        sess["issued_at"] = int(time.time())
 
     return user_id

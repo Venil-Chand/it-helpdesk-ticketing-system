@@ -935,7 +935,8 @@ def get_user(username):
     try:
         user = conn.execute(
             """
-            SELECT id, username, password_hash, role, is_active
+            SELECT id, username, password_hash, role, is_active,
+                   session_version
             FROM users
             WHERE username = ?
             """,
@@ -960,7 +961,11 @@ def get_user_by_id(user_id):
 
     try:
         return conn.execute(
-            "SELECT id, username, role, is_active FROM users WHERE id = ?",
+            """
+            SELECT id, username, role, is_active, session_version
+            FROM users
+            WHERE id = ?
+            """,
             (user_id,)
         ).fetchone()
 

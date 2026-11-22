@@ -12,6 +12,7 @@ import os
 import re
 import sqlite3
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -123,6 +124,12 @@ class AuthTestCase(unittest.TestCase):
             return dict(sess)
 
     def set_session(self, **values):
+        # A session naming a user gets the current format unless a test
+        # overrides part of it
+        if "user_id" in values:
+            values.setdefault("session_version", 1)
+            values.setdefault("issued_at", int(time.time()))
+
         with self.client.session_transaction() as sess:
             sess.clear()
             sess.update(values)
