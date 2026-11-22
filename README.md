@@ -48,7 +48,7 @@ The project demonstrates Python programming, web development, relational databas
 - **Account setup** — create the first administrator using a terminal script
 - **Password changes** — verify the current password before changing it
 - **Versioned database migrations** — explicit `flask --app app init-db` and read-only `db-status` commands; upgrades run in one transaction and never seed accounts
-- **Automated tests** — 429 tests covering authentication, authorization, CSRF, search, pagination, CSV export, history, SLA monitoring and database migrations
+- **Automated tests** — 509 tests covering authentication, authorization, CSRF, search, pagination, CSV export, history, SLA monitoring and database migrations
 
 ---
 
@@ -206,7 +206,8 @@ The database structure is defined in `migrations.py` as a numbered list of **mig
 | 1 | Core tables | `users`, `tickets`, `comments`; converts the original `ticket_comments` table |
 | 2 | Ticket indexes | `idx_tickets_owner_date`, `idx_tickets_date` |
 | 3 | Ticket history | Append-only `ticket_history`, its index and its two protective triggers |
-| 4 | Response SLA | `ticket_sla` (current version) |
+| 4 | Response SLA | `ticket_sla` |
+| 5 | Account activation | `users.is_active`; existing accounts stay active (current version) |
 
 The version is stored inside the database file itself, using SQLite's built-in `PRAGMA user_version` header field. No extra table is needed.
 
@@ -330,7 +331,7 @@ There are no "down" migrations. Recovery means restoring a backup. Before upgrad
 
    Anything written after the upgrade exists only in the file you moved aside.
 
-Migrations 1–4 only add tables, columns, indexes and triggers. Application versions from before this change ignore `user_version` and can still run on a version 4 database.
+Migrations 1–5 only add tables, columns, indexes and triggers. Application versions from before versioning ignore `user_version` and can still run on a version 5 database, but they also ignore `is_active`, so **rolling the code back stops deactivated accounts from being blocked**.
 
 ### Retired legacy migration script
 
@@ -365,7 +366,9 @@ it-helpdesk-ticketing-system/
 │   ├── test_account_setup.py
 │   ├── test_authentication.py
 │   ├── test_authorization.py
+│   ├── auth_helpers.py          (shared sign-in helper for route tests)
 │   ├── test_csrf.py
+│   ├── test_database_authentication.py
 │   ├── test_database_filters.py
 │   ├── test_logout.py
 │   ├── test_migrations.py
@@ -402,7 +405,7 @@ it-helpdesk-ticketing-system/
 | `csv_export.py` | Builds safe CSV files from ticket rows |
 | `setup_accounts.py` | Initial administrator setup and password changes |
 | `migrations.py` | Versioned, transaction-safe schema migrations (replaces the retired `migrate.py`) |
-| `tests/` | 429 automated tests covering auth, CSRF, ownership, search, pagination, CSV export, history, SLA and migrations |
+| `tests/` | 509 automated tests covering auth, CSRF, ownership, search, pagination, CSV export, history, SLA and migrations |
 
 The local `helpdesk.db` database and `.env` file are excluded from version control.
 
@@ -437,6 +440,34 @@ Jinja2 connects Python application data with HTML templates, allowing dynamic in
 ### Sessions
 
 Flask uses signed session cookies to identify authenticated users between requests.
+
+### Database-Backed Authentication
+
+The session cookie stores only a stable `user_id`. Before each view runs:
+
+1. A `before_request` hook reads `user_id` from the session.
+2. It loads the current account from SQLite.
+3. If the account exists and is active, it is stored in `flask.g` as `g.user`.
+4. If it was deleted or deactivated, the session is cleared and the visitor must log in again.
+5. If the database cannot be read, the request gets a **503** and no access.
+
+Sessions created before this change contain a stored `username` and `role`. Those values may be out of date, so such sessions are discarded and **everyone must log in once after upgrading**.
+
+Routes declare their access rule with a decorator:
+
+| Decorator | Who may continue |
+|---|---|
+| `@login_required` | Any verified, active account |
+| `@staff_required` | Active technicians and administrators |
+
+To deactivate or reactivate an account until an admin screen exists, **back up the database first**, then run:
+
+```bash
+sqlite3 helpdesk.db "UPDATE users SET is_active = 0 WHERE username = 'example';"
+sqlite3 helpdesk.db "UPDATE users SET is_active = 1 WHERE username = 'example';"
+```
+
+Prefer deactivating over deleting. Tickets store the creator's **username**, so a new account created later with a deleted user's name would gain access to that user's old tickets.
 
 ### Password Hashing
 
@@ -610,7 +641,7 @@ The SLA cards, rows and filter use exactly the same ownership rule as the ticket
 
 ## Automated Testing
 
-The project includes 429 automated tests using Python's built-in `unittest` framework.
+The project includes 509 automated tests using Python's built-in `unittest` framework.
 
 To run the full suite:
 
@@ -631,6 +662,7 @@ python -m unittest tests.test_search_route -v
 | `test_authentication.py` | 4 | Protected pages redirect anonymous visitors |
 | `test_account_setup.py` | 3 | Password hashing and password change rules |
 | `test_authorization.py` | 3 | Only staff may update ticket status |
+| `test_database_authentication.py` | 80 | Real account checks: deleted, deactivated and demoted users, legacy sessions, ownership, migration 5, database failures, CSRF and rate limiting |
 | `test_csrf.py` | 6 | State-changing forms reject missing or invalid tokens |
 | `test_logout.py` | 4 | Logout requires POST with a valid CSRF token |
 | `test_rate_limit.py` | 1 | Repeated login attempts are throttled |
@@ -680,6 +712,9 @@ Coverage is still not exhaustive. Concurrent migration attempts are tested, but 
 | Password changing | Implemented as a local script |
 | CSRF protection | Implemented on all state-changing forms |
 | Login rate limiting | Implemented (5 attempts per minute) |
+| Database-backed authentication | Account, active status and role are checked in SQLite on every request |
+| Deleted, deactivated and demoted users | Lose access on their next request |
+| Session revocation after logout | **Not implemented** (see below) |
 | Ticket ownership authorization | Implemented and enforced in SQL |
 | Search ownership restrictions | Implemented and tested |
 | Pagination ownership restrictions | Applied before paging; counts and pages tested |
@@ -687,7 +722,9 @@ Coverage is still not exhaustive. Concurrent migration attempts are tested, but 
 | HTTPS | Not configured |
 | Debug mode | Disabled (`debug=False`) |
 | Web-based account administration | Not implemented |
-| Automated security testing | 429 tests covering auth, CSRF, ownership, search, pagination, export, history, SLA and migrations |
+| Automated security testing | 509 tests covering auth, CSRF, ownership, search, pagination, export, history, SLA and migrations |
+
+**A copied session cookie still works after an ordinary logout.** Flask stores the session in a signed browser cookie, so logging out clears only that browser's copy. Checking the account on each request blocks the cookie once the account is deleted or deactivated, but not while the account remains active. Server-side session revocation and "log out everywhere" are planned next.
 
 Existing databases may still contain old demonstration credentials. Those passwords must be changed before relying on the updated authentication process.
 
@@ -723,6 +760,8 @@ Security improvements are ongoing.
 - [x] Implement login rate limiting
 - [x] Improve ticket ownership authorization
 - [x] Expand authentication and authorization tests
+- [x] Verify accounts, active status and roles against the database on every request
+- [ ] Add session revocation and log out everywhere
 - [x] Disable debug mode for deployment
 - [ ] Add a secure web-based change-password feature
 - [ ] Add administrator-controlled user creation
