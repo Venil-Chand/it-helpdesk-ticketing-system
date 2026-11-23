@@ -47,6 +47,7 @@ from dotenv import load_dotenv
 
 import database as db
 import migrations
+import security_config
 from csv_export import build_tickets_csv
 from sla_storage import parse_stored_utc
 
@@ -55,24 +56,21 @@ from sla_storage import parse_stored_utc
 # APPLICATION CONFIGURATION
 # ---------------------------------------------------
 
-# Load environment variables from .env
-load_dotenv()
+# Load local settings from .env, except in production and testing, whose
+# settings must come from the real environment
+if security_config.should_load_dotenv(os.environ):
+    load_dotenv()
+
+# Stop here, before any request is served, if the configuration is unsafe
+security_settings = security_config.load_settings(os.environ)
 
 # Create Flask application
 app = Flask(__name__)
 
-# Read secret key
-_secret = os.environ.get("SECRET_KEY")
-
-# Require a valid secret key configuration
-if not _secret:
-    raise RuntimeError(
-        "SECRET_KEY is not set. "
-        "Copy .env.example to .env and configure a secret key."
-    )
+app.config.update(security_config.flask_config(security_settings))
 
 # Configure Flask sessions
-app.secret_key = _secret
+app.secret_key = security_settings.secret_key
 
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
@@ -1237,6 +1235,15 @@ def schema_ready_for_startup():
 # ---------------------------------------------------
 
 if __name__ == "__main__":
+
+    # Flask's built-in server is for development only
+    if security_settings.is_production:
+        print(
+            "Refusing to start the development server in production. "
+            "Run the application with a production WSGI server.",
+            file=sys.stderr
+        )
+        sys.exit(1)
 
     # The schema is migrated explicitly with "flask --app app init-db"
     if not schema_ready_for_startup():
