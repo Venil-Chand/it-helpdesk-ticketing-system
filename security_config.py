@@ -11,6 +11,7 @@ Problems are reported by variable name only. A rejected value is never
 placed in an error message, because error messages end up in logs.
 """
 
+import ipaddress
 import os
 import re
 from dataclasses import dataclass, field
@@ -92,6 +93,13 @@ CSP_DIRECTIVES = (
 )
 
 
+# More proxies than this in front of one helpdesk is almost certainly a typo
+MAX_TRUSTED_PROXY_COUNT = 5
+
+# Ranges wider than these contain networks the operator does not control
+MIN_TRUSTED_PROXY_PREFIX = {4: 8, 6: 32}
+
+
 class ConfigurationError(RuntimeError):
     """The environment is unsafe, so the application must not start."""
 
@@ -106,6 +114,11 @@ class SecuritySettings:
     secret_key: str = field(repr=False)
 
     trusted_hosts: tuple
+
+    # How many reverse proxies sit in front of the app, and their addresses.
+    # The default of none means forwarded headers are never believed.
+    trusted_proxy_count: int = 0
+    trusted_proxy_networks: tuple = ()
 
     @property
     def is_production(self):
@@ -168,6 +181,59 @@ def _parse_trusted_hosts(raw, problems):
     return tuple(dict.fromkeys(hosts))
 
 
+def _parse_proxy_count(raw, problems):
+    """Read TRUSTED_PROXY_COUNT, which defaults to no proxy."""
+
+    text = raw.strip()
+
+    if not text:
+        return 0
+
+    if not (text.isascii() and text.isdigit()) or (
+        int(text) > MAX_TRUSTED_PROXY_COUNT
+    ):
+        problems.append(
+            "TRUSTED_PROXY_COUNT must be a whole number from 0 to "
+            f"{MAX_TRUSTED_PROXY_COUNT}."
+        )
+        return 0
+
+    return int(text)
+
+
+def _parse_proxy_networks(raw, problems):
+    """Read TRUSTED_PROXY_IPS, a comma-separated list of IPs or CIDR ranges."""
+
+    networks = []
+
+    for item in (part.strip() for part in raw.split(",")):
+        if not item:
+            continue
+
+        try:
+            network = ipaddress.ip_network(item, strict=True)
+        except ValueError:
+            problems.append(
+                "TRUSTED_PROXY_IPS must contain only IP addresses or "
+                "CIDR ranges, for example 10.0.0.2 or 10.0.0.0/24."
+            )
+            return ()
+
+        if (
+            network.prefixlen < MIN_TRUSTED_PROXY_PREFIX[network.version]
+            or (network.version == 6 and network.network_address.ipv4_mapped)
+        ):
+            problems.append(
+                "TRUSTED_PROXY_IPS contains a range that is too broad or "
+                "unsupported. List only your actual proxy addresses."
+            )
+            return ()
+
+        networks.append(network)
+
+    return tuple(dict.fromkeys(networks))
+
+
 def load_settings(environ=None):
     """
     Validate the environment and return its security settings.
@@ -217,6 +283,27 @@ def load_settings(environ=None):
         else:
             trusted_hosts = LOCAL_HOSTS
 
+    proxy_count = _parse_proxy_count(
+        environ.get("TRUSTED_PROXY_COUNT", ""), problems
+    )
+    proxy_networks = _parse_proxy_networks(
+        environ.get("TRUSTED_PROXY_IPS", ""), problems
+    )
+
+    # Trusting forwarded headers without knowing who sent them would let
+    # any client forge its address, so the two settings must be used together
+    if not problems_mention_proxy(problems):
+        if proxy_count and not proxy_networks:
+            problems.append(
+                "TRUSTED_PROXY_IPS is required when TRUSTED_PROXY_COUNT "
+                "is above 0."
+            )
+        elif proxy_networks and not proxy_count:
+            problems.append(
+                "TRUSTED_PROXY_COUNT must be above 0 when TRUSTED_PROXY_IPS "
+                "is set."
+            )
+
     if problems:
         raise ConfigurationError(
             f"Unsafe {environment} configuration:\n  - "
@@ -227,6 +314,8 @@ def load_settings(environ=None):
         environment=environment,
         secret_key=secret_key,
         trusted_hosts=trusted_hosts,
+        trusted_proxy_count=proxy_count,
+        trusted_proxy_networks=proxy_networks,
     )
 
 
@@ -234,6 +323,12 @@ def problems_mention_hosts(problems):
     """Avoid reporting the same TRUSTED_HOSTS mistake twice."""
 
     return any(problem.startswith("TRUSTED_HOSTS") for problem in problems)
+
+
+def problems_mention_proxy(problems):
+    """Avoid a second, misleading error about the proxy settings."""
+
+    return any(problem.startswith("TRUSTED_PROXY") for problem in problems)
 
 
 def flask_config(settings):

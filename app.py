@@ -49,6 +49,7 @@ import database as db
 import migrations
 import security_config
 import validation
+from proxy_trust import TrustedProxyMiddleware
 from csv_export import build_tickets_csv
 from sla_storage import parse_stored_utc
 
@@ -80,6 +81,31 @@ SESSION_MAX_LIFETIME = timedelta(hours=8)
 
 app.config["PERMANENT_SESSION_LIFETIME"] = SESSION_MAX_LIFETIME
 app.config["SESSION_REFRESH_EACH_REQUEST"] = False
+
+# Believe forwarded headers only from the configured reverse proxy. Without
+# one, they are removed before Flask or the rate limiter can read them.
+app.wsgi_app = TrustedProxyMiddleware(
+    app.wsgi_app,
+    security_settings.trusted_proxy_count,
+    security_settings.trusted_proxy_networks
+)
+
+
+@app.before_request
+def require_https_in_production():
+    """
+    Refuse plain HTTP in production.
+
+    This is registered before CSRF protection so that the request is
+    stopped first. The reverse proxy should redirect visitors to HTTPS, so
+    reaching this usually means the proxy settings are wrong.
+    """
+
+    if security_settings.is_production and not request.is_secure:
+        return plain_error("This site must be accessed over HTTPS.\n", 400)
+
+    return None
+
 
 # Enable CSRF protection
 csrf = CSRFProtect(app)
