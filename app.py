@@ -48,6 +48,7 @@ from dotenv import load_dotenv
 import database as db
 import migrations
 import security_config
+import validation
 from csv_export import build_tickets_csv
 from sla_storage import parse_stored_utc
 
@@ -101,6 +102,44 @@ def add_security_headers(response):
         security_settings,
         is_secure=request.is_secure,
         is_static=request.endpoint == "static"
+    )
+
+
+def plain_error(message, status):
+    """
+    Build a short plain-text error page.
+
+    These errors can happen before the user is loaded or when the Host is
+    invalid, so a normal page template could fail while rendering. The
+    message is fixed text and never repeats anything from the request.
+    """
+
+    return Response(
+        message,
+        status=status,
+        content_type="text/plain; charset=utf-8"
+    )
+
+
+@app.errorhandler(400)
+def bad_request(error):
+    """Refuse a malformed request, such as a missing CSRF token."""
+
+    return plain_error(
+        "The request could not be processed. Go back, reload the page "
+        "and try again.\n",
+        400
+    )
+
+
+@app.errorhandler(413)
+def request_too_large(error):
+    """Refuse a request body above the configured limit."""
+
+    return plain_error(
+        "The submitted data is too large. The limit is 1 MiB per request. "
+        "Nothing was saved.\n",
+        413
     )
 
 
@@ -400,6 +439,10 @@ def get_ticket_or_404(ticket_id):
     ticket numbers cannot be probed to learn which ones exist.
     """
 
+    # SQLite cannot look up a number this large, and no such ticket can exist
+    if not is_positive_integer(ticket_id):
+        abort(404)
+
     ticket = db.get_ticket(ticket_id)
 
     if not can_view_ticket(ticket):
@@ -511,8 +554,15 @@ def login():
         )
 
         # Find the user in the database. If that fails, nobody signs in.
+        # Oversized credentials get the normal "invalid" message and never
+        # reach the deliberately slow password hash.
+        credentials_fit = (
+            len(username) <= validation.MAX_USERNAME_LENGTH
+            and len(password) <= validation.MAX_PASSWORD_LENGTH
+        )
+
         try:
-            user = db.get_user(username)
+            user = db.get_user(username) if credentials_fit else None
         except sqlite3.Error as error:
             return authentication_unavailable(error)
 
@@ -774,6 +824,21 @@ def export_tickets():
 # CREATE NEW TICKET
 # ---------------------------------------------------
 
+def render_new_ticket_form(title="", description="", priority="Medium",
+                           status=200):
+    """Show the form, keeping what the user typed if it was rejected."""
+
+    return render_template(
+        "new_ticket.html",
+        priorities=PRIORITIES,
+        draft_title=title,
+        draft_description=description,
+        draft_priority=priority if priority in PRIORITIES else "Medium",
+        max_title_length=validation.MAX_TITLE_LENGTH,
+        max_description_length=validation.MAX_DESCRIPTION_LENGTH
+    ), status
+
+
 @app.route("/tickets/new", methods=["GET", "POST"])
 @login_required
 def new_ticket():
@@ -781,20 +846,42 @@ def new_ticket():
 
     if request.method == "POST":
 
-        title = request.form.get(
-            "title", ""
-        ).strip()
+        title = validation.clean_text(
+            request.form.get("title", ""),
+            label="Title",
+            max_length=validation.MAX_TITLE_LENGTH,
+            multiline=False
+        )
 
-        description = request.form.get(
-            "description", ""
-        ).strip()
+        description = validation.clean_text(
+            request.form.get("description", ""),
+            label="Description",
+            max_length=validation.MAX_DESCRIPTION_LENGTH,
+            multiline=True
+        )
 
         priority = request.form.get(
             "priority", "Medium"
         )
 
+        # Too long or invalid: nothing is saved or shortened, and the user
+        # gets their text back to correct it
+        errors = [item.error for item in (title, description) if item.error]
+
+        if errors:
+
+            for message in errors:
+                flash(message, "danger")
+
+            return render_new_ticket_form(
+                title.value,
+                description.value,
+                priority,
+                status=400
+            )
+
         # Validate required fields
-        if not title or not description:
+        if not title.value or not description.value:
 
             flash(
                 "Title and description are required.",
@@ -812,8 +899,8 @@ def new_ticket():
 
             # Create a ticket with the current username
             ticket_id = db.create_ticket(
-                title,
-                description,
+                title.value,
+                description.value,
                 priority,
                 g.user.username
             )
@@ -830,26 +917,29 @@ def new_ticket():
                 )
             )
 
-    return render_template(
-        "new_ticket.html",
-        priorities=PRIORITIES
-    )
+        return render_new_ticket_form(
+            title.value,
+            description.value,
+            priority
+        )
+
+    return render_new_ticket_form()
 
 
 # ---------------------------------------------------
 # VIEW TICKET DETAILS
 # ---------------------------------------------------
 
-@app.route("/tickets/<int:ticket_id>")
-@login_required
-def ticket_detail(ticket_id):
-    """Display a ticket only if the user is authorised."""
+def render_ticket_page(ticket, comment_draft="", status=200):
+    """
+    Show a ticket the caller has already authorised.
 
-    # Step 1: Retrieve the ticket, checking ownership or staff access
-    ticket = get_ticket_or_404(ticket_id)
+    A rejected note is passed back as comment_draft so it is not lost.
+    """
 
-    # Step 2: Retrieve comments and activity history.
-    # This runs only after the access check above, so history is
+    ticket_id = ticket["id"]
+
+    # These run only after the caller's access check, so history is
     # protected by exactly the same rule as the ticket itself.
     comments = db.get_comments(ticket_id)
     history = db.get_ticket_history(ticket_id)
@@ -867,7 +957,6 @@ def ticket_detail(ticket_id):
 
         all_users = []
 
-    # Step 3: Display ticket details
     return render_template(
         "ticket_detail.html",
         ticket=ticket,
@@ -875,8 +964,18 @@ def ticket_detail(ticket_id):
         history=history,
         sla=sla,
         statuses=STATUSES,
-        all_users=all_users
-    )
+        all_users=all_users,
+        comment_draft=comment_draft,
+        max_comment_length=validation.MAX_COMMENT_LENGTH
+    ), status
+
+
+@app.route("/tickets/<int:ticket_id>")
+@login_required
+def ticket_detail(ticket_id):
+    """Display a ticket only if the user is authorised."""
+
+    return render_ticket_page(get_ticket_or_404(ticket_id))
 
 
 # ---------------------------------------------------
@@ -891,12 +990,24 @@ def ticket_detail(ticket_id):
 def update_ticket(ticket_id):
     """Update ticket status and technician assignment."""
 
+    ticket = get_ticket_or_404(ticket_id)
+
     # Read submitted data
     status = request.form.get("status")
 
-    assigned_to = request.form.get(
-        "assigned_to", ""
-    ).strip() or None
+    assignee = validation.clean_text(
+        request.form.get("assigned_to", ""),
+        label="Assignee",
+        max_length=validation.MAX_USERNAME_LENGTH,
+        multiline=False
+    )
+
+    assigned_to = assignee.value or None
+
+    # The form only offers valid names, so this is a forged request. The
+    # current value stays accepted so an older ticket can still be updated.
+    if assignee.error and assigned_to != ticket["assigned_to"]:
+        abort(400)
 
     # Validate ticket status
     if status not in STATUSES:
@@ -952,14 +1063,27 @@ def add_comment(ticket_id):
     """Add a comment only to an authorised ticket."""
 
     # Step 1: Stop unless this user may access the ticket
-    get_ticket_or_404(ticket_id)
+    ticket = get_ticket_or_404(ticket_id)
 
-    # Step 2: Read submitted comment
-    content = request.form.get(
-        "content", ""
-    ).strip()
+    # Step 2: Read and check the submitted comment
+    content = validation.clean_text(
+        request.form.get("content", ""),
+        label="Note",
+        max_length=validation.MAX_COMMENT_LENGTH,
+        multiline=True
+    )
 
-    if not content:
+    if content.error:
+
+        flash(content.error, "danger")
+
+        return render_ticket_page(
+            ticket,
+            comment_draft=content.value,
+            status=400
+        )
+
+    if not content.value:
 
         flash(
             "Comment cannot be empty.",
@@ -972,7 +1096,7 @@ def add_comment(ticket_id):
         db.add_comment(
             ticket_id,
             g.user.username,
-            content
+            content.value
         )
 
         flash(

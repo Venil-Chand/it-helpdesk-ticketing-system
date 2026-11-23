@@ -306,8 +306,9 @@
             name="content"
             rows="3"
             placeholder="Write what you did, what you found, or any update…"
+            maxlength="{{ max_comment_length }}"
             required
-          ></textarea>
+          >{{ comment_draft }}</textarea>
 
           <!-- Submit comment -->
           <button type="submit"

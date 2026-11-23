@@ -15,6 +15,8 @@ import os
 import re
 from dataclasses import dataclass, field
 
+import validation
+
 DEVELOPMENT = "development"
 TESTING = "testing"
 PRODUCTION = "production"
@@ -266,6 +268,11 @@ def flask_config(settings):
         "WTF_CSRF_SSL_STRICT": True,
 
         "PREFERRED_URL_SCHEME": "https" if production else "http",
+
+        # Oversized requests are refused with 413 before they are parsed
+        "MAX_CONTENT_LENGTH": validation.MAX_REQUEST_BODY_BYTES,
+        "MAX_FORM_MEMORY_SIZE": validation.MAX_REQUEST_BODY_BYTES,
+        "MAX_FORM_PARTS": validation.MAX_FORM_PARTS,
     }
 
     if production:
