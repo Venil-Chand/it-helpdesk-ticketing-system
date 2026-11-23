@@ -130,6 +130,23 @@ main.container-fluid {
   border-bottom: 2px solid rgba(255,255,255,0.8);
 }
 
+/* ── Layout helpers ──
+   These replace inline style attributes, which the Content Security
+   Policy blocks. */
+.search-group {
+  width: 250px;
+  max-width: 100%;
+}
+.filter-select {
+  width: auto;
+}
+.ticket-id-col {
+  width: 60px;
+}
+.preserve-lines {
+  white-space: pre-wrap;
+}
+
 /* ── Responsive stat sizes ── */
 @media (max-width: 576px) {
   .stat-num { font-size: 1.6rem; }

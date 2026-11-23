@@ -181,8 +181,7 @@
     >
 
         <!-- Search Field -->
-        <div class="input-group input-group-sm"
-             style="width:250px; max-width:100%;">
+        <div class="input-group input-group-sm search-group">
 
             <span class="input-group-text">
                 <i class="bi bi-search"></i>
@@ -212,9 +211,8 @@
         <select
             id="status-filter"
             name="status"
-            class="form-select form-select-sm"
-            style="width:auto;"
-            onchange="this.form.submit()"
+            class="form-select form-select-sm filter-select"
+            data-auto-submit
         >
 
             {% for s in statuses %}
@@ -240,9 +238,8 @@
         <select
             id="priority-filter"
             name="priority"
-            class="form-select form-select-sm"
-            style="width:auto;"
-            onchange="this.form.submit()"
+            class="form-select form-select-sm filter-select"
+            data-auto-submit
         >
 
             {% for p in priorities %}
@@ -269,9 +266,8 @@
         <select
             id="sla-filter"
             name="sla"
-            class="form-select form-select-sm"
-            style="width:auto;"
-            onchange="this.form.submit()"
+            class="form-select form-select-sm filter-select"
+            data-auto-submit
         >
 
             <option value="" {% if active_sla == 'All' %}selected{% endif %}>
@@ -361,7 +357,7 @@
             <!-- Table Headings -->
             <thead class="table-dark">
                 <tr>
-                    <th style="width:60px;">#</th>
+                    <th class="ticket-id-col">#</th>
                     <th>Title</th>
                     <th>Priority</th>
                     <th>Status</th>

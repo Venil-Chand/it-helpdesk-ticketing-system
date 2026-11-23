@@ -60,6 +60,36 @@ _HOSTNAME = re.compile(
 _FLASK_DEBUG_OFF_VALUES = frozenset({"", "0", "false", "no"})
 
 
+PRODUCTION_SESSION_COOKIE_NAME = "__Host-helpdesk_session"
+
+# One year. includeSubDomains and preload are deliberately left out because
+# they affect other sites on the domain and are hard to undo.
+HSTS_MAX_AGE_SECONDS = 31536000
+
+# Exact CDN files rather than the whole CDN: cdnjs hosts many old libraries
+# an attacker could otherwise load to get around the policy.
+_CDN = "https://cdnjs.cloudflare.com/ajax/libs"
+
+CSP_DIRECTIVES = (
+    "default-src 'none'",
+    f"script-src 'self' {_CDN}/bootstrap/5.3.2/js/bootstrap.bundle.min.js",
+    "style-src 'self' "
+    f"{_CDN}/bootstrap/5.3.2/css/bootstrap.min.css "
+    f"{_CDN}/bootstrap-icons/1.11.3/font/bootstrap-icons.min.css",
+    f"font-src {_CDN}/bootstrap-icons/1.11.3/font/fonts/",
+
+    # Exception: Bootstrap's CSS draws its small icons (menu, close button,
+    # select arrow) as data: SVG images. Images cannot run script here.
+    "img-src 'self' data:",
+
+    "connect-src 'none'",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+)
+
+
 class ConfigurationError(RuntimeError):
     """The environment is unsafe, so the application must not start."""
 
@@ -207,11 +237,82 @@ def problems_mention_hosts(problems):
 def flask_config(settings):
     """Translate validated settings into Flask configuration values."""
 
+    production = settings.is_production
+
     config = {
         "TRUSTED_HOSTS": list(settings.trusted_hosts),
+
+        # JavaScript cannot read the session cookie
+        "SESSION_COOKIE_HTTPONLY": True,
+
+        # Sent on normal link clicks but not on cross-site form posts.
+        # "Strict" would make links to a ticket from email look signed out.
+        "SESSION_COOKIE_SAMESITE": "Lax",
+
+        # Browsers will not send a Secure cookie over plain HTTP, so this
+        # must stay off for http://127.0.0.1:5000
+        "SESSION_COOKIE_SECURE": production,
+
+        # The __Host- prefix makes browsers refuse this cookie unless it is
+        # Secure, host-only and for path /, so a sibling subdomain cannot
+        # plant a session. It requires HTTPS, so production only.
+        "SESSION_COOKIE_NAME": (
+            PRODUCTION_SESSION_COOKIE_NAME if production else "session"
+        ),
+
+        # CSRF stays on in every environment, and HTTPS requests must also
+        # carry a same-site Referer header
+        "WTF_CSRF_ENABLED": True,
+        "WTF_CSRF_SSL_STRICT": True,
+
+        "PREFERRED_URL_SCHEME": "https" if production else "http",
     }
 
-    if settings.is_production:
+    if production:
         config["DEBUG"] = False
 
     return config
+
+
+def content_security_policy(settings):
+    """Build the Content-Security-Policy header value."""
+
+    directives = list(CSP_DIRECTIVES)
+
+    if settings.is_production:
+        directives.append("upgrade-insecure-requests")
+
+    return "; ".join(directives)
+
+
+def apply_security_headers(response, settings, *, is_secure, is_static):
+    """Add the security headers to one response."""
+
+    headers = response.headers
+
+    headers["Content-Security-Policy"] = content_security_policy(settings)
+    headers["X-Content-Type-Options"] = "nosniff"
+    headers["X-Frame-Options"] = "DENY"
+
+    # Not "no-referrer": Flask-WTF requires a same-origin Referer on HTTPS
+    # form posts. This sends it to this site and to nobody else.
+    headers["Referrer-Policy"] = "same-origin"
+
+    headers["Permissions-Policy"] = (
+        "camera=(), geolocation=(), microphone=(), payment=(), usb=()"
+    )
+    headers["Cross-Origin-Opener-Policy"] = "same-origin"
+    headers["Cross-Origin-Resource-Policy"] = "same-origin"
+
+    # Pages can contain tickets or CSRF tokens. Public static files keep
+    # Flask's normal caching.
+    if not is_static:
+        headers["Cache-Control"] = "no-store"
+
+    # Browsers remember HSTS, so it is sent only by production over HTTPS
+    if settings.is_production and is_secure:
+        headers["Strict-Transport-Security"] = (
+            f"max-age={HSTS_MAX_AGE_SECONDS}"
+        )
+
+    return response

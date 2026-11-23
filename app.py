@@ -72,9 +72,6 @@ app.config.update(security_config.flask_config(security_settings))
 # Configure Flask sessions
 app.secret_key = security_settings.secret_key
 
-app.config["SESSION_COOKIE_HTTPONLY"] = True
-app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-
 # A login lasts at most this long, however active the user is. Activity
 # does not extend it: the login time is stored in the session and checked
 # on the server, and the browser cookie is not refreshed on each request.
@@ -93,6 +90,18 @@ limiter = Limiter(
     app=app,
     storage_uri="memory://"
 )
+
+
+@app.after_request
+def add_security_headers(response):
+    """Add the security headers to every response, including errors."""
+
+    return security_config.apply_security_headers(
+        response,
+        security_settings,
+        is_secure=request.is_secure,
+        is_static=request.endpoint == "static"
+    )
 
 
 # ---------------------------------------------------
