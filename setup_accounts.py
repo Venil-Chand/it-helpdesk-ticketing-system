@@ -145,7 +145,10 @@ def setup_account():
                 (password_hash, user["id"])
             )
 
+            # The users_revoke_sessions trigger ends existing logins as
+            # part of this same transaction
             print("Password updated successfully.")
+            print("All existing login sessions for this account have ended.")
 
         # Save the database changes
         conn.commit()

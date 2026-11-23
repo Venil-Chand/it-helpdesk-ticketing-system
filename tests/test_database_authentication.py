@@ -12,6 +12,7 @@ import os
 import re
 import sqlite3
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -123,6 +124,12 @@ class AuthTestCase(unittest.TestCase):
             return dict(sess)
 
     def set_session(self, **values):
+        # A session naming a user gets the current format unless a test
+        # overrides part of it
+        if "user_id" in values:
+            values.setdefault("session_version", 1)
+            values.setdefault("issued_at", int(time.time()))
+
         with self.client.session_transaction() as sess:
             sess.clear()
             sess.update(values)
@@ -721,7 +728,7 @@ class TestActivationMigration(unittest.TestCase):
 
         result = migrations.migrate(self.path)
 
-        self.assertEqual([m.version for m in result.applied], [5])
+        self.assertEqual([m.version for m in result.applied], [5, 6])
         self.assertEqual(self.version(), SCHEMA_VERSION)
         self.assertTrue(migrations.schema_status(self.path).is_current)
 
@@ -802,7 +809,7 @@ class TestActivationMigration(unittest.TestCase):
         status = migrations.schema_status(self.path)
 
         self.assertEqual(status.state, "outdated")
-        self.assertEqual([m.version for m in status.pending], [5])
+        self.assertEqual([m.version for m in status.pending], [5, 6])
 
     def test_upgraded_account_can_authenticate(self):
         migrations.migrate(self.path)
@@ -1017,20 +1024,12 @@ class TestExistingProtections(AuthTestCase):
 
 
 # ---------------------------------------------------
-# DOCUMENTED BOUNDARY (DAY 32)
+# COPIED COOKIES
 # ---------------------------------------------------
 
-class TestKnownSessionBoundary(AuthTestCase):
+class TestCopiedCookies(AuthTestCase):
 
-    def test_copied_cookie_still_works_after_ordinary_logout(self):
-        """
-        Records a KNOWN LIMITATION rather than desired behaviour.
-
-        Flask sessions live in the signed cookie, so logout clears only
-        the browser that sent it. Full revocation is planned for Day 32;
-        this test should then be changed to expect a rejection.
-        """
-
+    def test_copied_cookie_is_rejected_after_logout(self):
         self.login("alice")
         copied = self.client.get_cookie("session").value
 
@@ -1040,7 +1039,7 @@ class TestKnownSessionBoundary(AuthTestCase):
         attacker = self.new_client()
         attacker.set_cookie("session", copied)
 
-        self.assertEqual(attacker.get("/").status_code, 200)
+        self.assert_sent_to_login(attacker.get("/"))
 
     def test_copied_cookie_stops_working_once_deactivated(self):
         self.login("alice")

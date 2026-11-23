@@ -512,9 +512,12 @@ class TestUpgradeUnversionedCurrentSchema(UpgradeTestCase):
 
         self.assert_fully_migrated()
 
-        # Migration 5 adds users.is_active; nothing else may change
+        # Migrations 5 and 6 change only users and add its trigger
         def without_users(objects):
-            return [item for item in objects if item[1] != "users"]
+            return [
+                item for item in objects
+                if item[1] not in ("users", "users_revoke_sessions")
+            ]
 
         self.assertEqual(without_users(self.schema()), without_users(schema))
         self.assertEqual(

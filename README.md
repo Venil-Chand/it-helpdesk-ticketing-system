@@ -48,7 +48,7 @@ The project demonstrates Python programming, web development, relational databas
 - **Account setup** — create the first administrator using a terminal script
 - **Password changes** — verify the current password before changing it
 - **Versioned database migrations** — explicit `flask --app app init-db` and read-only `db-status` commands; upgrades run in one transaction and never seed accounts
-- **Automated tests** — 509 tests covering authentication, authorization, CSRF, search, pagination, CSV export, history, SLA monitoring and database migrations
+- **Automated tests** — 615 tests covering authentication, authorization, CSRF, search, pagination, CSV export, history, SLA monitoring and database migrations
 
 ---
 
@@ -207,7 +207,8 @@ The database structure is defined in `migrations.py` as a numbered list of **mig
 | 2 | Ticket indexes | `idx_tickets_owner_date`, `idx_tickets_date` |
 | 3 | Ticket history | Append-only `ticket_history`, its index and its two protective triggers |
 | 4 | Response SLA | `ticket_sla` |
-| 5 | Account activation | `users.is_active`; existing accounts stay active (current version) |
+| 5 | Account activation | `users.is_active`; existing accounts stay active |
+| 6 | Session revocation | `users.session_version` and the `users_revoke_sessions` trigger (current version) |
 
 The version is stored inside the database file itself, using SQLite's built-in `PRAGMA user_version` header field. No extra table is needed.
 
@@ -331,7 +332,7 @@ There are no "down" migrations. Recovery means restoring a backup. Before upgrad
 
    Anything written after the upgrade exists only in the file you moved aside.
 
-Migrations 1–5 only add tables, columns, indexes and triggers. Application versions from before versioning ignore `user_version` and can still run on a version 5 database, but they also ignore `is_active`, so **rolling the code back stops deactivated accounts from being blocked**.
+Migrations 1–6 only add tables, columns, indexes and triggers. Application versions from before versioning ignore `user_version` and can still run on a version 6 database, but they also ignore `is_active` and `session_version`, so **rolling the code back stops deactivated accounts and revoked cookies from being blocked**.
 
 ### Retired legacy migration script
 
@@ -379,6 +380,7 @@ it-helpdesk-ticketing-system/
 │   ├── test_pagination_route.py
 │   ├── test_rate_limit.py
 │   ├── test_search_route.py
+│   ├── test_session_revocation.py
 │   ├── test_sla_dashboard_db.py
 │   ├── test_sla_dashboard_routes.py
 │   ├── ...                      (SLA, CSV and history tests)
@@ -405,7 +407,7 @@ it-helpdesk-ticketing-system/
 | `csv_export.py` | Builds safe CSV files from ticket rows |
 | `setup_accounts.py` | Initial administrator setup and password changes |
 | `migrations.py` | Versioned, transaction-safe schema migrations (replaces the retired `migrate.py`) |
-| `tests/` | 509 automated tests covering auth, CSRF, ownership, search, pagination, CSV export, history, SLA and migrations |
+| `tests/` | 615 automated tests covering auth, CSRF, ownership, search, pagination, CSV export, history, SLA and migrations |
 
 The local `helpdesk.db` database and `.env` file are excluded from version control.
 
@@ -443,15 +445,15 @@ Flask uses signed session cookies to identify authenticated users between reques
 
 ### Database-Backed Authentication
 
-The session cookie stores only a stable `user_id`. Before each view runs:
+The session cookie stores a stable `user_id`, the account's `session_version` and the login time. It never stores a role. Before each view runs:
 
 1. A `before_request` hook reads `user_id` from the session.
 2. It loads the current account from SQLite.
-3. If the account exists and is active, it is stored in `flask.g` as `g.user`.
-4. If it was deleted or deactivated, the session is cleared and the visitor must log in again.
+3. If the account exists, is active, the session has not expired and its version matches, the account is stored in `flask.g` as `g.user`.
+4. Otherwise the session is cleared and the visitor must log in again.
 5. If the database cannot be read, the request gets a **503** and no access.
 
-Sessions created before this change contain a stored `username` and `role`. Those values may be out of date, so such sessions are discarded and **everyone must log in once after upgrading**.
+Older session formats are missing these values or contain a stored `username` and `role` that may be out of date. They are discarded, so **everyone must log in once after upgrading**.
 
 Routes declare their access rule with a decorator:
 
@@ -468,6 +470,29 @@ sqlite3 helpdesk.db "UPDATE users SET is_active = 1 WHERE username = 'example';"
 ```
 
 Prefer deactivating over deleting. Tickets store the creator's **username**, so a new account created later with a deleted user's name would gain access to that user's old tickets.
+
+### Session Expiration and Revocation
+
+Flask keeps the session in a signed browser cookie. The signature stops anyone from editing it, but a copy of the cookie remains valid unless the server has a way to refuse it. Each account therefore has a `session_version` number in SQLite:
+
+- Login copies the current number into the cookie.
+- Every request compares the cookie's number with the database.
+- Revoking adds 1 to the database value, so every cookie holding the old number stops working.
+
+| Event | Effect on sessions |
+|---|---|
+| Logout | Ends **all** sessions for that account, on every device |
+| Password change | Ends all sessions for that account |
+| Deactivation | Ends all sessions; reactivating does not restore them |
+| Account deletion | The account lookup fails, so its sessions stop working |
+| Role change | Applies on the next request; the user stays logged in with the new role |
+| 8 hours after login | The session expires, even if the user is active |
+
+**Logout is account-wide.** Logging out on a laptop also logs out the same user's phone, because they share one version number. Ending just one device would need a server-side `sessions` table with one row per login.
+
+A database trigger handles password and activation changes, so they revoke sessions even when made directly with SQL. Logout uses a single atomic `UPDATE ... WHERE session_version = ?`: simultaneous logouts increment the version once, and an old replayed cookie cannot sign out a newer session.
+
+If the database cannot be updated during logout, this browser is still logged out, and a warning explains that other sessions could not be ended. If a session cannot be verified, the request receives a 503 and no access.
 
 ### Password Hashing
 
@@ -641,7 +666,7 @@ The SLA cards, rows and filter use exactly the same ownership rule as the ticket
 
 ## Automated Testing
 
-The project includes 509 automated tests using Python's built-in `unittest` framework.
+The project includes 615 automated tests using Python's built-in `unittest` framework.
 
 To run the full suite:
 
@@ -662,6 +687,7 @@ python -m unittest tests.test_search_route -v
 | `test_authentication.py` | 4 | Protected pages redirect anonymous visitors |
 | `test_account_setup.py` | 3 | Password hashing and password change rules |
 | `test_authorization.py` | 3 | Only staff may update ticket status |
+| `test_session_revocation.py` | 106 | Copied-cookie replay, expiry, revocation, concurrency, legacy sessions, failures and migration 6 |
 | `test_database_authentication.py` | 80 | Real account checks: deleted, deactivated and demoted users, legacy sessions, ownership, migration 5, database failures, CSRF and rate limiting |
 | `test_csrf.py` | 6 | State-changing forms reject missing or invalid tokens |
 | `test_logout.py` | 4 | Logout requires POST with a valid CSRF token |
@@ -714,7 +740,8 @@ Coverage is still not exhaustive. Concurrent migration attempts are tested, but 
 | Login rate limiting | Implemented (5 attempts per minute) |
 | Database-backed authentication | Account, active status and role are checked in SQLite on every request |
 | Deleted, deactivated and demoted users | Lose access on their next request |
-| Session revocation after logout | **Not implemented** (see below) |
+| Session revocation | Logout, password changes and deactivation end all of an account's sessions |
+| Session expiry | Absolute 8-hour limit enforced on the server |
 | Ticket ownership authorization | Implemented and enforced in SQL |
 | Search ownership restrictions | Implemented and tested |
 | Pagination ownership restrictions | Applied before paging; counts and pages tested |
@@ -722,9 +749,9 @@ Coverage is still not exhaustive. Concurrent migration attempts are tested, but 
 | HTTPS | Not configured |
 | Debug mode | Disabled (`debug=False`) |
 | Web-based account administration | Not implemented |
-| Automated security testing | 509 tests covering auth, CSRF, ownership, search, pagination, export, history, SLA and migrations |
+| Automated security testing | 615 tests covering auth, CSRF, ownership, search, pagination, export, history, SLA and migrations |
 
-**A copied session cookie still works after an ordinary logout.** Flask stores the session in a signed browser cookie, so logging out clears only that browser's copy. Checking the account on each request blocks the cookie once the account is deleted or deactivated, but not while the account remains active. Server-side session revocation and "log out everywhere" are planned next.
+**Session limits:** a stolen cookie remains usable until the user logs out, changes their password, is deactivated, or the 8-hour limit passes. Logout cannot target a single device. A request already being processed when a session is revoked may finish. Because HTTPS is not configured, cookies can still be intercepted on an untrusted network.
 
 Existing databases may still contain old demonstration credentials. Those passwords must be changed before relying on the updated authentication process.
 
@@ -761,7 +788,7 @@ Security improvements are ongoing.
 - [x] Improve ticket ownership authorization
 - [x] Expand authentication and authorization tests
 - [x] Verify accounts, active status and roles against the database on every request
-- [ ] Add session revocation and log out everywhere
+- [x] Add session expiry and account-wide session revocation
 - [x] Disable debug mode for deployment
 - [ ] Add a secure web-based change-password feature
 - [ ] Add administrator-controlled user creation

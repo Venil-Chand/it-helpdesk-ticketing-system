@@ -935,7 +935,8 @@ def get_user(username):
     try:
         user = conn.execute(
             """
-            SELECT id, username, password_hash, role, is_active
+            SELECT id, username, password_hash, role, is_active,
+                   session_version
             FROM users
             WHERE username = ?
             """,
@@ -960,9 +961,43 @@ def get_user_by_id(user_id):
 
     try:
         return conn.execute(
-            "SELECT id, username, role, is_active FROM users WHERE id = ?",
+            """
+            SELECT id, username, role, is_active, session_version
+            FROM users
+            WHERE id = ?
+            """,
             (user_id,)
         ).fetchone()
+
+    finally:
+        conn.close()
+
+
+def revoke_user_sessions(user_id, expected_version):
+    """
+    End every login session for an account, if `expected_version` is current.
+
+    The comparison and the increment are one atomic UPDATE. When several
+    requests race, exactly one changes the row, and an old replayed cookie
+    changes nothing, so it cannot sign the user out of newer sessions.
+
+    Returns True if this call revoked the sessions.
+    """
+
+    conn = get_db()
+
+    try:
+        with conn:
+            cursor = conn.execute(
+                """
+                UPDATE users
+                SET session_version = session_version + 1
+                WHERE id = ? AND session_version = ?
+                """,
+                (user_id, expected_version)
+            )
+
+        return cursor.rowcount == 1
 
     finally:
         conn.close()
