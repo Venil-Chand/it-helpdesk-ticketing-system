@@ -1016,7 +1016,9 @@ def ticket_detail(ticket_id):
 def update_ticket(ticket_id):
     """Update ticket status and technician assignment."""
 
-    ticket = get_ticket_or_404(ticket_id)
+    # SQLite cannot look up a number this large, and no such ticket can exist
+    if not is_positive_integer(ticket_id):
+        abort(404)
 
     # Read submitted data
     status = request.form.get("status")
@@ -1032,7 +1034,9 @@ def update_ticket(ticket_id):
 
     # The form only offers valid names, so this is a forged request. The
     # current value stays accepted so an older ticket can still be updated.
-    if assignee.error and assigned_to != ticket["assigned_to"]:
+    if assignee.error and (
+        assigned_to != get_ticket_or_404(ticket_id)["assigned_to"]
+    ):
         abort(400)
 
     # Validate ticket status
