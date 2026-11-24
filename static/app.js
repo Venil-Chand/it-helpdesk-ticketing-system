@@ -8,3 +8,13 @@ document.addEventListener("change", function (event) {
     control.form.submit();
   }
 });
+
+// Ask before submitting a form marked data-confirm="question", for actions
+// such as deactivating an account. Without JavaScript the form still works.
+document.addEventListener("submit", function (event) {
+  var question = event.target.getAttribute("data-confirm");
+
+  if (question && !window.confirm(question)) {
+    event.preventDefault();
+  }
+});

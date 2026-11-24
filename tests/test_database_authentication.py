@@ -606,8 +606,9 @@ class TestEveryRouteIsProtected(AuthTestCase):
             if rule.endpoint in self.PUBLIC_ENDPOINTS:
                 continue
 
-            url = rule.rule.replace("<int:ticket_id>",
-                                    str(self.alice_ticket))
+            url = rule.rule.replace(
+                "<int:ticket_id>", str(self.alice_ticket)
+            ).replace("<int:user_id>", str(self.ids["alice"]))
 
             for method in rule.methods - {"HEAD", "OPTIONS"}:
                 with self.subTest(endpoint=rule.endpoint, method=method):

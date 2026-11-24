@@ -17,6 +17,7 @@ from functools import wraps
 
 from flask import (
     Blueprint,
+    abort,
     current_app,
     flash,
     g,
@@ -46,6 +47,9 @@ SESSION_MAX_LIFETIME = timedelta(hours=8)
 # unrecognised one, gets only the access of an ordinary user.
 STAFF_ROLES = frozenset({"technician", "admin"})
 
+# The only role that may manage accounts
+ADMIN_ROLE = "admin"
+
 # These never need the account: static files are public, and logging out
 # must keep working even while the database is unavailable.
 ACCOUNT_CHECK_EXEMPT_ENDPOINTS = frozenset({"static", "auth.logout"})
@@ -72,6 +76,10 @@ class CurrentUser:
     @property
     def is_staff(self):
         return self.role in STAFF_ROLES
+
+    @property
+    def is_admin(self):
+        return self.role == ADMIN_ROLE
 
 
 # ---------------------------------------------------
@@ -249,6 +257,27 @@ def staff_required(view):
                 )
 
             return redirect(url_for("dashboard.index"))
+
+        return view(*args, **kwargs)
+
+    # Signed-out visitors go to the login page before any role check
+    return login_required(wrapped_view)
+
+
+def admin_required(view):
+    """
+    Allow a view only for administrators; others get a 403.
+
+    The role comes from the database for this request (load_current_user),
+    never from the cookie or the form. The account functions check it
+    again inside their write transaction.
+    """
+
+    @wraps(view)
+    def wrapped_view(*args, **kwargs):
+
+        if not g.user.is_admin:
+            abort(403)
 
         return view(*args, **kwargs)
 

@@ -84,6 +84,16 @@
           </a>
         </li>
 
+        {% if g.user.is_admin %}
+        <!-- Account administration (administrators only) -->
+        <li class="nav-item">
+          <a class="nav-link" href="{{ url_for('admin.users') }}">
+            <i class="bi bi-people me-1"></i>
+            Users
+          </a>
+        </li>
+        {% endif %}
+
       </ul>
 
 
@@ -105,6 +115,15 @@
 
           </span>
 
+        </li>
+
+
+        <!-- Change your own password -->
+        <li class="nav-item">
+          <a class="nav-link py-1" href="{{ url_for('account.change_password') }}">
+            <i class="bi bi-key me-1"></i>
+            Password
+          </a>
         </li>
 
 

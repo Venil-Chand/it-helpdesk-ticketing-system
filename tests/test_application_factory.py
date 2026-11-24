@@ -60,6 +60,23 @@ EXPECTED_ROUTES = {
     ("/static/<path:filename>", frozenset({"GET"}), "static"),
 }
 
+# Routes added after the blueprint refactoring, for account administration
+# and self-service password changes. Listed exactly, so any other new
+# route still fails test_url_map_matches_the_pre_blueprint_routes_exactly.
+ACCOUNT_ROUTES = {
+    ("/account/password", frozenset({"GET", "POST"}),
+     "account.change_password"),
+    ("/admin/users", frozenset({"GET"}), "admin.users"),
+    ("/admin/users/new", frozenset({"GET", "POST"}), "admin.new_user"),
+    ("/admin/users/<int:user_id>/role", frozenset({"POST"}),
+     "admin.change_role"),
+    ("/admin/users/<int:user_id>/active", frozenset({"POST"}),
+     "admin.set_active"),
+    ("/admin/users/<int:user_id>/password", frozenset({"POST"}),
+     "admin.reset_password"),
+    ("/admin/audit", frozenset({"GET"}), "admin.audit_log"),
+}
+
 # Endpoint names used before the blueprints; none may still resolve
 OLD_ENDPOINTS = (
     "index", "login", "logout", "new_ticket", "ticket_detail",
@@ -302,7 +319,7 @@ class BlueprintRegistrationTests(unittest.TestCase):
     def test_expected_blueprints_are_registered(self):
         self.assertEqual(
             set(self.app.blueprints),
-            {"auth", "dashboard", "tickets", "reports"}
+            {"auth", "dashboard", "tickets", "reports", "account", "admin"}
         )
         self.assertEqual(len(BLUEPRINTS), len(self.app.blueprints))
 
@@ -313,7 +330,7 @@ class BlueprintRegistrationTests(unittest.TestCase):
             for rule in self.app.url_map.iter_rules()
         }
 
-        self.assertEqual(actual, EXPECTED_ROUTES)
+        self.assertEqual(actual, EXPECTED_ROUTES | ACCOUNT_ROUTES)
 
     def test_old_endpoint_names_no_longer_resolve(self):
         with self.app.test_request_context():
@@ -349,7 +366,8 @@ class BlueprintRegistrationTests(unittest.TestCase):
         with self.app.test_request_context():
             for endpoint in sorted(found):
                 with self.subTest(endpoint=endpoint):
-                    url_for(endpoint, ticket_id=1, filename="style.css")
+                    url_for(endpoint, ticket_id=1, user_id=1,
+                            filename="style.css")
 
     def test_security_hooks_are_registered_once_in_order(self):
         names = [
