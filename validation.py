@@ -9,6 +9,7 @@ letter or an emoji counts as one character however many bytes it uses.
 Text that is too long is rejected and never shortened.
 """
 
+import re
 import unicodedata
 from dataclasses import dataclass
 
@@ -25,6 +26,56 @@ MAX_COMMENT_LENGTH = 10_000
 # deliberately slow password hash, so it cannot be used to waste CPU time.
 MAX_USERNAME_LENGTH = 150
 MAX_PASSWORD_LENGTH = 1024
+
+# The same minimum setup_accounts.py has always required
+MIN_PASSWORD_LENGTH = 16
+
+# Names for NEW accounts: 3-64 letters, digits, ".", "_" or "-", starting
+# with a letter or digit. Existing accounts keep their names (usernames
+# are permanent). Plain ASCII avoids look-alike names such as a Cyrillic
+# "а" in "admin", and the names are safe in logs, URLs and CSV files.
+NEW_USERNAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{2,63}")
+
+
+def username_problem(username):
+    """Why `username` cannot be used for a new account, or None."""
+
+    if not NEW_USERNAME_PATTERN.fullmatch(username or ""):
+        return (
+            "Username must be 3 to 64 characters: letters, digits, "
+            "'.', '_' or '-', starting with a letter or digit."
+        )
+
+    return None
+
+
+def new_password_problem(password, confirmation):
+    """
+    Why `password` cannot be set, or None.
+
+    The rules are the ones setup_accounts.py already applies: at least
+    MIN_PASSWORD_LENGTH characters, at most MAX_PASSWORD_LENGTH (longer
+    would be refused at the login page), and typed the same way twice.
+    """
+
+    password = password or ""
+
+    if len(password) < MIN_PASSWORD_LENGTH:
+        return (
+            f"Password must contain at least {MIN_PASSWORD_LENGTH} "
+            "characters."
+        )
+
+    if len(password) > MAX_PASSWORD_LENGTH:
+        return (
+            f"Password must contain at most {MAX_PASSWORD_LENGTH} "
+            "characters."
+        )
+
+    if password != (confirmation or ""):
+        return "Passwords do not match."
+
+    return None
 
 # Control characters allowed in multi-line text, after newline normalising
 _MULTILINE_CONTROLS = frozenset("\n\t")
