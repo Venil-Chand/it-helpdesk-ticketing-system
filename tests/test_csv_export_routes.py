@@ -104,7 +104,7 @@ class TestCsvExportRoute(CsvRouteTestCase):
         mock_search.assert_called_once_with(
             search_text="", username="alice",
             status_filter="All", priority_filter="All",
-            sla_filter="All", now=ANY
+            sla_filter="All", include_sla=True, now=ANY
         )
 
     def test_staff_export_is_not_restricted(self):
@@ -139,7 +139,7 @@ class TestCsvExportRoute(CsvRouteTestCase):
         mock_search.assert_called_once_with(
             search_text="printer", username="alice",
             status_filter="Open", priority_filter="High",
-            sla_filter="All", now=ANY
+            sla_filter="All", include_sla=True, now=ANY
         )
 
     def test_overlong_search_is_truncated_like_the_dashboard(self):

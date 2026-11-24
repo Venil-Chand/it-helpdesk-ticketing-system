@@ -40,15 +40,15 @@ The project demonstrates Python programming, web development, relational databas
 - **Dashboard pagination** — 10 tickets per page with numbered navigation that keeps the search and filters
 - **Response SLA tracking** — every new ticket gets a response deadline based on its priority; the first qualifying staff response is recorded
 - **SLA monitoring dashboard** — summary cards for Within SLA, Due Soon, Overdue, Met, Breached and Not Tracked, an SLA column on every ticket row, and an SLA status filter
-- **CSV export** — download every ticket matching the current search and filters, with spreadsheet formula injection neutralised
+- **CSV export** — download every ticket matching the current search and filters, with the same SLA status, deadline and first response the dashboard shows, and spreadsheet formula injection neutralised
 - **Ticket activity history** — an append-only timeline of creation, status, assignment and comment events
 - **Ticket details** — view descriptions, updates and comments
-- **Ticket management** — update status and technician assignment
+- **Ticket management** — update status and assign tickets, only ever to active technicians or administrators (checked on the server)
 - **Comments** — add notes to existing tickets
 - **Account setup** — create the first administrator using a terminal script
 - **Password changes** — verify the current password before changing it
 - **Versioned database migrations** — explicit `flask --app app init-db` and read-only `db-status` commands; upgrades run in one transaction and never seed accounts
-- **Automated tests** — 754 tests covering authentication, authorization, CSRF, search, pagination, CSV export, history, SLA monitoring and database migrations
+- **Automated tests** — 829 tests covering authentication, authorization, CSRF, search, pagination, CSV export, history, assignment rules, SLA policy and monitoring, and database migrations
 
 ---
 
@@ -208,7 +208,8 @@ The database structure is defined in `migrations.py` as a numbered list of **mig
 | 3 | Ticket history | Append-only `ticket_history`, its index and its two protective triggers |
 | 4 | Response SLA | `ticket_sla` |
 | 5 | Account activation | `users.is_active`; existing accounts stay active |
-| 6 | Session revocation | `users.session_version` and the `users_revoke_sessions` trigger (current version) |
+| 6 | Session revocation | `users.session_version` and the `users_revoke_sessions` trigger |
+| 7 | Stable usernames | `users_username_immutable` and `users_no_historical_username_reuse` triggers; no rows changed (current version) |
 
 The version is stored inside the database file itself, using SQLite's built-in `PRAGMA user_version` header field. No extra table is needed.
 
@@ -219,6 +220,7 @@ The version is stored inside the database file itself, using SQLite's built-in `
 | `flask --app app db-status` | Shows the current version, the latest version and any pending migrations. Exits with status 0 only if the schema is up to date. | Never. The file is opened read-only, and a missing file is not created. |
 | `flask --app app init-db` | Creates a new database, or applies pending migrations in order, then reports the final version. Exits with status 1 if anything fails. | Yes |
 | `flask --app app init-db --backup-to FILE` | Writes a verified backup to a new `FILE` first. If the backup fails, no migration is attempted. | Yes |
+| `flask --app app assignment-audit` | Lists tickets assigned to an account that could not be chosen today (missing, deactivated or wrong role). Exits with status 1 if any are found. | Never. The file is opened read-only. |
 
 Neither command creates user accounts or prints passwords, password hashes, ticket contents or `.env` values.
 
@@ -368,6 +370,7 @@ it-helpdesk-ticketing-system/
 ├── README.md
 ├── tests/
 │   ├── test_account_setup.py
+│   ├── test_assignment_validation.py
 │   ├── test_authentication.py
 │   ├── test_authorization.py
 │   ├── auth_helpers.py          (shared sign-in helper for route tests)
@@ -391,6 +394,7 @@ it-helpdesk-ticketing-system/
 │   ├── test_session_revocation.py
 │   ├── test_sla_dashboard_db.py
 │   ├── test_sla_dashboard_routes.py
+│   ├── test_sla_policy.py
 │   ├── ...                      (SLA, CSV and history tests)
 │   ├── test_ticket_ownership.py
 │   └── test_ticket_search.py
@@ -419,7 +423,7 @@ it-helpdesk-ticketing-system/
 | `security_config.py` | Validates environment settings and defines cookies, headers and the CSP |
 | `validation.py` | Server-side text and request size limits |
 | `proxy_trust.py` | Believes forwarded headers only from configured proxies |
-| `tests/` | 754 automated tests covering auth, CSRF, ownership, search, pagination, CSV export, history, SLA, migrations and production security |
+| `tests/` | 829 automated tests covering auth, CSRF, ownership, search, pagination, CSV export, history, assignment, SLA, migrations and production security |
 
 The local `helpdesk.db` database and `.env` file are excluded from version control.
 
@@ -607,6 +611,69 @@ Adding parameters such as `?username=bob`, `?role=admin` or `?per_page=1000` has
 
 ---
 
+## Staff Assignment Rules
+
+A ticket can be assigned only to an account that can actually work on it. The rules are enforced on the server, in `database.update_ticket()`, inside the same database transaction that saves the change. The HTML form is a convenience, not the protection.
+
+### Who can receive a ticket
+
+| Account | Can be assigned? |
+|---|---|
+| Active technician | Yes |
+| Active administrator | Yes |
+| Regular user | No |
+| Account with any other role (for example a typo such as `superuser`) | No |
+| Deactivated account (`is_active = 0`) | No |
+| Deleted or nonexistent account | No |
+
+- **Only technicians and administrators can change an assignment.** Regular users, signed-out visitors and deactivated or demoted staff are refused before anything is read from the form.
+- **Names must match exactly.** `TECH`, `tech ` (after trimming, spaces are removed like any other field) and look-alike Unicode letters are not the account `tech`.
+- **Checked at save time.** If an account is deactivated after the page was loaded, saving still refuses it.
+- **All or nothing.** A refused update saves nothing, not even a status change made in the same form, and records no history.
+- **One message for every refusal.** The page says only that tickets can go to active technicians or administrators. It never says whether the name exists or is deactivated, so the form cannot be used to discover accounts. The exact reason is written to the server log.
+- **Unassigning is always allowed.**
+- **Assignment does not grant access.** Technicians and administrators can already see every ticket; regular users still see only tickets they created.
+
+### Tickets already assigned to someone who no longer qualifies
+
+Older versions accepted any name, and staff leave. These assignments are **kept exactly as stored**; nothing is deleted or rewritten automatically.
+
+- The ticket page shows staff a warning naming the reason (for example "account is deactivated").
+- The form keeps that name selected, labelled "current, no longer eligible", so saving a **status** change keeps the assignment instead of silently unassigning the ticket. (Before this change the browser fell back to "Unassigned" and saving removed the assignment.)
+- Choosing a different, eligible person or "Unassigned" works normally, and the history records the old name.
+- To list every such ticket without changing anything:
+
+```bash
+flask --app app assignment-audit
+```
+
+It opens the database read-only, prints each ticket number, assignee and reason, and exits with status 1 if any were found.
+
+### Usernames are permanent (migration 7)
+
+Tickets, comments and history refer to people by **username**. If an account were deleted and someone new were given the same name, the newcomer would see the old person's tickets and appear as the author of their comments. Migration 7 adds two database triggers so this cannot happen, even through manual SQL:
+
+| Trigger | Effect |
+|---|---|
+| `users_username_immutable` | A username can never be changed. |
+| `users_no_historical_username_reuse` | A new account cannot use a name that appears in any ticket's creator or assignee, any comment author, or any history entry. |
+
+Deleting and deactivating accounts still work. A name that was never used in any ticket can be created again. If `setup_accounts.py` finds the name `admin` reserved this way, it explains why and creates nothing.
+
+**Should assignments use user IDs instead?** This was investigated. Storing `users.id` would also make references stable, but with these triggers a username already cannot change or pass to someone else, which gives the same protection. Moving to IDs would mean rewriting the ownership queries, the `idx_tickets_owner_date` index, history and CSV export, and older tickets that name deleted accounts could not be converted because no ID exists for them. It is therefore proposed as a future migration (see [Proposed future migrations](#proposed-future-migrations)), not done now.
+
+### Upgrading an existing database to version 7
+
+Migration 7 adds only the two triggers. It does not change any existing ticket, comment, history event, SLA row or account. As with every migration, the application refuses to start until it has been applied:
+
+```bash
+flask --app app db-status
+flask --app app init-db --backup-to backups/helpdesk-before-v7.db
+flask --app app assignment-audit
+```
+
+---
+
 ## SLA Monitoring Dashboard
 
 The dashboard shows how every ticket you may see is doing against its **response SLA**: the time allowed for a technician or administrator to first reply.
@@ -624,6 +691,52 @@ When a ticket is created, a response deadline is stored for it in the `ticket_sl
 
 Targets are calendar hours (policy `calendar-hours-v1`). The first comment from a technician or administrator on **someone else's** ticket is recorded as the first response. A requester's own comments never stop the clock.
 
+### SLA definitions
+
+Five different events happen to a ticket. Only one of them counts as the response:
+
+| Event | Recorded where | Effect on the response SLA |
+|---|---|---|
+| **Creation** | `tickets.created_at` | Starts the clock. The deadline is creation time + the priority's target, stored once in `ticket_sla.response_due_at`. |
+| **Assignment** to a staff member | `assigned`/`reassigned` history events | None. Assigning is routing, not a reply to the requester. |
+| **First meaningful staff response** | `ticket_sla.first_response_at` | Stops the clock. It is the time of the first comment written by a technician or administrator on a ticket somebody else created. |
+| **Status change** (Open, In Progress) | `status_changed` history events | None. |
+| **Resolution or closure** (Resolved, Closed) | `status_changed` history events | None. Closing a ticket is not a reply. |
+
+Rules that follow from this, all covered by tests:
+
+- **Who can respond:** an account whose role is `technician` or `admin` at the moment it comments. Comments by the requester, by ordinary users, or by a technician on a ticket they raised themselves do not count. All comments are visible to the requester, so a staff comment is a reply they can read.
+- **Recorded once:** later comments never replace the first response, and the stored time is the comment's own database time, not the time it was processed.
+- **The deadline never moves:** changing status or assignment does not change it.
+- **Reopened tickets:** a ticket moved from Resolved or Closed back to Open keeps its first response and its Met or Breached outcome; no new deadline is created. A reopened ticket that was never answered is still waiting for its first response.
+- **Closed or resolved without any response:** the status stays **Overdue** once the deadline passes (or Within SLA / Due Soon before it). Closing does not hide a missed response. This is the existing, documented policy and has been kept.
+- **Cancelled tickets:** there is no Cancelled status. A ticket closed by mistake follows the rule above.
+- **Business hours:** none. Nights, weekends and holidays count. A Low ticket raised on Friday at 18:00 UTC is due Monday at 18:00 UTC.
+- **Time zones:** every SLA time is stored and compared in UTC, and shown with a `UTC` label on the ticket page, the dashboard and the CSV export.
+- **Historical tickets:** tickets created before SLA tracking stay Not Tracked. No deadline or response is calculated for them afterwards, and stored SLA rows are never recalculated.
+
+### Unresolved business decisions
+
+These need a decision from the service owner. They are deliberately **not** implemented, because they would change what existing reports mean:
+
+1. **Business hours and holidays.** Should targets count only working hours? If so: which hours, which time zone, and which holiday calendar? This would be a new policy version (for example `business-hours-v1`) applied only to new tickets, so existing deadlines keep their meaning.
+2. **Closed without a response.** Should these show as **Breached** instead of **Overdue**, so that Overdue means "still needs action"? Either way the missed response must remain visible.
+3. **Resolution SLA.** Only a *response* target exists. Is a time-to-resolve target wanted, and should reopening pause or restart it?
+4. **Pausing the clock** while waiting for the requester (an "On hold" or "Waiting for customer" status).
+5. **What counts as meaningful.** Any non-empty staff comment counts today. Should very short or template replies be excluded? Software cannot judge this reliably.
+6. **Priority changes.** Priority cannot be changed after creation today. If that is added, should the deadline be recalculated?
+7. **Cancelled status.** Should there be one, and should cancelled tickets be left out of SLA counts?
+
+### Proposed future migrations
+
+None of these have been applied. Each needs a decision and explicit approval first, and a backup before it runs.
+
+| Proposal | What it would do | Why it is not done now |
+|---|---|---|
+| `tickets.assigned_to_user_id` and `tickets.created_by_user_id` | Refer to accounts by permanent numeric ID, filled in from the current username where an account still exists | Usernames are already permanent (migration 7); tickets naming deleted accounts could not be filled in; ownership queries and indexes would all change |
+| `ticket_sla.resolved_at` | Record when a ticket was first resolved | Depends on decision 3; would need a documented rule for existing tickets (left empty, not reconstructed from history) |
+| New SLA policy version | Business-hours deadlines for new tickets only | Depends on decision 1 |
+
 ### SLA statuses
 
 | Status | Meaning |
@@ -639,12 +752,14 @@ The boundaries are exact: a ticket with no response is **Overdue** at the deadli
 
 Not Tracked tickets are never counted as overdue. The status depends only on the first response, not on the ticket's Open/Closed status. This is the existing SLA policy, which the dashboard does not change.
 
+**The same answer everywhere.** The ticket page, the dashboard rows, the summary cards and the CSV export all use these definitions and are tested against each other at one fixed moment. The ticket page shows **Not Tracked** too, instead of showing nothing.
+
 ### Using the SLA dashboard
 
 - **Summary cards** count tickets in each status across everything you may see, not just the current page or search. They show the UTC time they were calculated at.
 - **Click a card**, or use the **SLA** select next to the status and priority filters, to list only tickets in that status. Search, status, priority and pagination all keep working with it.
 - The **Response SLA** column shows each ticket's status, deadline and first response time, in UTC. Overdue rows have a red edge and due-soon rows an amber one, and the status is always written out, so colour is never the only signal.
-- **Export CSV** exports the tickets matching the current filters, including the SLA filter. The CSV columns are unchanged.
+- **Export CSV** exports the tickets matching the current filters, including the SLA filter. After the original nine columns (which keep their positions) it adds **SLA Status**, **Response Due (UTC)** and **First Response (UTC)**, calculated by the dashboard's own SQL at the moment of the export. Not Tracked tickets have empty SLA times.
 
 The SLA filter is in the URL, for example `/?sla=overdue&priority=High&page=2`. Accepted values are `within`, `due_soon`, `overdue`, `met`, `breached` and `not_tracked`. Any other value is ignored.
 
@@ -654,7 +769,7 @@ The SLA filter is in the URL, for example `/?sla=overdue&priority=High&page=2`. 
 2. `database.py` turns the SLA rules into one SQL `CASE` expression, joined to the tickets with `LEFT JOIN ticket_sla`. Tickets without an SLA row become Not Tracked.
 3. The SLA filter is part of the SQL `WHERE` clause, so it runs **before** `LIMIT`/`OFFSET`, and the count uses the same filter.
 4. The summary cards come from one `GROUP BY` query. Only six numbers reach Python.
-5. The ticket page still uses the original Python SLA code. Tests check that the SQL and Python give the same status for every stored timestamp format and boundary.
+5. The ticket page still uses the original Python SLA code, given the same clock as the dashboard. Tests check that the SQL and Python give the same status for every stored timestamp format and boundary, including a seeded fuzz test of damaged values.
 
 ### Database performance
 
@@ -668,7 +783,15 @@ No new index was added. An SLA status depends on the current time, so it cannot 
 
 ### Stored timestamps
 
-SQLite's `julianday()` reads stored times the same way `sla_storage.parse_stored_utc()` does: text without an offset (like SQLite's `CURRENT_TIMESTAMP`) is UTC, and text with `+05:30`, `-05:00` or `Z` is converted to UTC. Values that are not date-time text, such as `"2461000"` or `"now"`, are refused. The ticket page then shows no SLA and the dashboard shows Not Tracked.
+Python and SQLite each read dates differently on their own. For example, Python accepted `20261117T090000` and `2026-W47-2`, while SQLite accepted `2026-02-30` (quietly moving it to 2 March), year `0000` and a trailing space. Each of those made the ticket page and the dashboard disagree about the same ticket. Both now accept exactly one format:
+
+```text
+YYYY-MM-DD HH:MM:SS     (a T or a space between date and time)
+  optional .f / .ff / .fff         up to milliseconds
+  optional Z or +HH:MM / -HH:MM    offset up to 14:59; none means UTC
+```
+
+This covers everything the application writes. Text without an offset (like SQLite's `CURRENT_TIMESTAMP`) is UTC; text with `+05:30`, `-05:00` or `Z` is converted to UTC. Anything else, such as `"2461000"`, `"now"`, a date without a time, or an impossible date, is unreadable: the ticket page, the dashboard and the CSV all show **Not Tracked**. The rule lives in `sla_storage.py` as a Python regular expression and a matching list of SQL `GLOB` patterns, and 62,700 generated values were checked to give identical results on both sides. Stored values are never rewritten; an unreadable row simply stays Not Tracked.
 
 ### SLA and ticket ownership
 
@@ -748,7 +871,7 @@ Documented exceptions:
 | Ticket title | 200 characters, single line | 400, form returned with your text |
 | Ticket description | 10,000 characters | 400, form returned with your text |
 | Comment | 10,000 characters | 400, page returned with your text |
-| Assignee | 150 characters, single line | 400 |
+| Assignee | 150 characters, single line, and an active technician or administrator | 400 for length or characters; refused with a message for an ineligible account |
 | Login username / password | 150 / 1,024 characters | Normal "invalid" message, without hashing |
 
 Text is **never silently shortened**. Limits count Unicode characters, so an emoji is one character on the server. Browsers count an emoji as two for `maxlength`, so the form can stop slightly earlier than the server would. Windows line endings count as one character, and control characters are rejected.
@@ -803,7 +926,7 @@ These tests load a private copy of the application for each environment and use 
 - Rate limits are in memory, so they reset on restart and are not shared between workers.
 - `APP_ENV` defaults to development. A server started without it accepts only localhost hostnames, but it does not enforce HTTPS.
 - `flask run` cannot be blocked in production by the app itself, so the deployment must use a WSGI server.
-- Assignees are length-checked but not yet required to be existing accounts.
+- Assignees must be active technicians or administrators; tickets assigned before this rule are kept and flagged rather than changed.
 - Bidirectional text control characters are allowed, so ticket text can display in a misleading order.
 - Pages depend on the cdnjs CDN. Integrity hashes stop altered files, but an outage would remove styling.
 - SQLite suits a small, single-server deployment only.
@@ -812,7 +935,7 @@ These tests load a private copy of the application for each environment and use 
 
 ## Automated Testing
 
-The project includes 754 automated tests using Python's built-in `unittest` framework.
+The project includes 829 automated tests using Python's built-in `unittest` framework.
 
 To run the full suite:
 
@@ -864,6 +987,8 @@ python -m unittest tests.test_search_route -v
 | `test_security_headers_cookies.py` | 37 | Cookies, revocation, expiry, CSRF, headers, CSP, template compatibility and main workflows in production |
 | `test_input_limits.py` | 47 | Body, field, Unicode, login, assignee and ticket-number limits |
 | `test_proxy_trust.py` | 23 | Forwarded-header trust, rate-limit spoofing, HTTPS detection and Host validation |
+| `test_assignment_validation.py` | 45 | Valid, missing, deleted, deactivated and wrong-role assignees; tampered requests; refusal saves nothing; former assignees kept; the audit command; username reuse and renaming; migration 7 |
+| `test_sla_policy.py` | 30 | Deadlines; what is and is not a first response; reopened, closed and unanswered tickets; ticket page, dashboard and CSV agreeing; time zones; the shared timestamp format |
 
 Tests never touch the real `helpdesk.db`:
 
@@ -905,7 +1030,9 @@ Coverage is still not exhaustive. Concurrent migration attempts are tested, but 
 | Reverse-proxy trust | Forwarded headers accepted only from configured proxies |
 | Host validation | Implemented with `TRUSTED_HOSTS` |
 | Web-based account administration | Not implemented |
-| Automated security testing | 754 tests covering auth, CSRF, ownership, search, pagination, export, history, SLA, migrations and production security |
+| Ticket assignment | Only active technicians and administrators; enforced in the database transaction; tested |
+| Username reuse | Usernames cannot be renamed or given to a new account while ticket records use them (migration 7) |
+| Automated security testing | 829 tests covering auth, CSRF, ownership, search, pagination, export, history, assignment, SLA, migrations and production security |
 
 **Session limits:** a stolen cookie remains usable until the user logs out, changes their password, is deactivated, or the 8-hour limit passes. Logout cannot target a single device. A request already being processed when a session is revoked may finish. Local development uses plain HTTP, so it must not be exposed to an untrusted network.
 

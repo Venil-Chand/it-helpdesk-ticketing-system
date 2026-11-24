@@ -155,17 +155,35 @@ SLA_STATUS_LABELS = (
 
 def _readable_timestamp_sql(column):
     """
-    SQL that is true only if `column` holds a date-time text value.
+    SQL that is true only if `column` holds a stored timestamp in exactly
+    the shape sla_storage.parse_stored_utc() accepts.
 
-    julianday() also accepts things parse_stored_utc() rejects, such as
-    '2461000' (read as a Julian day number) or 'now' (the current time),
-    so the text must also start with a YYYY-MM-DD date.
+    julianday() on its own accepts far more, such as '2461000' (a Julian
+    day number), 'now', '2026-02-30' (silently moved to 2 March), a
+    trailing space, or year 0000. Each check below closes one of those
+    gaps, so the ticket page (Python) and the dashboard and CSV export
+    (SQL) always agree on which rows are readable and on their times:
+
+      GLOB patterns   the exact text shape (see STORED_TIMESTAMP_GLOBS)
+      hour < 24       SQLite accepts 24:00:00, the Python rule does not
+      round trip      the date and time are real, not normalised
+      upper bound     the UTC time fits in a Python datetime
     """
+
+    shapes = " OR ".join(
+        f"{column} GLOB '{pattern}'"
+        for pattern in sla_storage.STORED_TIMESTAMP_GLOBS
+    )
 
     return (
         f"(typeof({column}) = 'text'"
-        f" AND {column} GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'"
-        f" AND julianday({column}) IS NOT NULL)"
+        f" AND ({shapes})"
+        f" AND substr({column}, 12, 2) < '24'"
+        f" AND julianday({column}) IS NOT NULL"
+        f" AND strftime('%Y-%m-%d %H:%M:%S', substr({column}, 1, 19))"
+        f"     = replace(substr({column}, 1, 19), 'T', ' ')"
+        f" AND julianday({column})"
+        f"     <= julianday('9999-12-31 23:59:59.999'))"
     )
 
 
@@ -307,6 +325,7 @@ def search_tickets(
     priority_filter="All",
     *,
     sla_filter="All",
+    include_sla=False,
     now=None
 ):
     """
@@ -317,6 +336,10 @@ def search_tickets(
 
     Optional status, priority and SLA status filters are supported.
     The SLA status is evaluated at `now` (default: the current UTC time).
+
+    include_sla=True adds sla_status, sla_response_due_at and
+    sla_first_response_at to every row, from the same SQL the dashboard
+    uses, so an export can never disagree with the dashboard.
     """
 
     filters = {
@@ -326,7 +349,7 @@ def search_tickets(
         "priority_filter": priority_filter
     }
 
-    if sla_filter and sla_filter != "All":
+    if include_sla or (sla_filter and sla_filter != "All"):
         # Only the matching rows change. ticket_rows.* also carries the
         # SLA columns, which callers such as the CSV export ignore.
         query, params = _sla_ticket_query(
@@ -535,6 +558,128 @@ def create_ticket(title, description, priority, created_by):
 
 
 # ---------------------------------------------------
+# TICKET ASSIGNMENT RULES
+# ---------------------------------------------------
+
+# Roles that may receive tickets. These are the same support staff roles
+# that can see every ticket and whose replies count as an SLA response.
+ASSIGNABLE_ROLES = frozenset({"technician", "admin"})
+
+# Why an assignee was refused. These codes are for logs and the read-only
+# audit command; the web page shows one generic message, so a technician
+# cannot use the form to find out which accounts exist.
+ASSIGNEE_MISSING = "account does not exist"
+ASSIGNEE_INACTIVE = "account is deactivated"
+ASSIGNEE_WRONG_ROLE = "account role cannot receive tickets"
+
+
+class InvalidAssigneeError(ValueError):
+    """A ticket was about to be given to an account that may not have it."""
+
+    def __init__(self, username, reason):
+        super().__init__(f"cannot assign ticket: {reason}")
+        self.username = username
+        self.reason = reason
+
+
+def _assignee_problem(conn, username):
+    """
+    Return why `username` may not receive tickets, or None if it may.
+
+    Only an existing, active account with an assignable role qualifies.
+    The match is exact, so "Tech" is not the account "tech".
+    """
+
+    account = conn.execute(
+        "SELECT role, is_active FROM users WHERE username = ?",
+        (username,)
+    ).fetchone()
+
+    if account is None:
+        return ASSIGNEE_MISSING
+
+    if account["is_active"] != 1:
+        return ASSIGNEE_INACTIVE
+
+    if account["role"] not in ASSIGNABLE_ROLES:
+        return ASSIGNEE_WRONG_ROLE
+
+    return None
+
+
+def get_assignee_problem(username):
+    """Public form of _assignee_problem() for the ticket page warning."""
+
+    conn = get_db()
+
+    try:
+        return _assignee_problem(conn, username)
+
+    finally:
+        conn.close()
+
+
+def get_assignable_users():
+    """Usernames that may receive tickets right now, alphabetically."""
+
+    roles = sorted(ASSIGNABLE_ROLES)
+
+    conn = get_db()
+
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT username FROM users
+            WHERE is_active = 1
+              AND role IN ({", ".join("?" for _ in roles)})
+            ORDER BY username
+            """,
+            roles
+        ).fetchall()
+
+        return [row["username"] for row in rows]
+
+    finally:
+        conn.close()
+
+
+def find_ineligible_assignments(path=None):
+    """
+    List tickets whose current assignee could not be chosen today.
+
+    Read-only: the database is opened with mode=ro, so this can be run
+    against a production database without any risk of changing it.
+    Nothing is fixed automatically; an administrator decides what to do
+    with each ticket. Returns [(ticket_id, assigned_to, reason), ...].
+    """
+
+    conn = migrations._connect_read_only(path or DB_PATH)
+    conn.row_factory = sqlite3.Row
+
+    try:
+        tickets = conn.execute(
+            """
+            SELECT id, assigned_to FROM tickets
+            WHERE assigned_to IS NOT NULL AND assigned_to != ''
+            ORDER BY id
+            """
+        ).fetchall()
+
+        found = []
+
+        for ticket in tickets:
+            reason = _assignee_problem(conn, ticket["assigned_to"])
+
+            if reason is not None:
+                found.append((ticket["id"], ticket["assigned_to"], reason))
+
+        return found
+
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------
 # UPDATE TICKET
 # ---------------------------------------------------
 
@@ -543,6 +688,13 @@ def update_ticket(ticket_id, status, assigned_to, *, actor):
     Update ticket status and assignment, recording each real change.
 
     actor must be the authenticated username, never a form value.
+
+    A NEW assignee must be an existing, active technician or admin, or
+    InvalidAssigneeError is raised and nothing at all is saved. Keeping
+    the current assignee is always allowed, even if that account has
+    since been deactivated or deleted, so older tickets can still have
+    their status changed without their history being rewritten.
+    Unassigning is always allowed.
 
     Returns a list of (action, field, old_value, new_value) tuples for
     the changes made, an empty list if nothing changed, or None if the
@@ -578,6 +730,14 @@ def update_ticket(ticket_id, status, assigned_to, *, actor):
             old_assignee = current["assigned_to"] or None
 
             if assigned_to != old_assignee:
+                # Checked inside the write lock, so an account deactivated
+                # a moment ago can never be given the ticket
+                if assigned_to is not None:
+                    reason = _assignee_problem(conn, assigned_to)
+
+                    if reason is not None:
+                        raise InvalidAssigneeError(assigned_to, reason)
+
                 if old_assignee is None:
                     action = "assigned"
                 elif assigned_to is None:
@@ -998,22 +1158,6 @@ def revoke_user_sessions(user_id, expected_version):
             )
 
         return cursor.rowcount == 1
-
-    finally:
-        conn.close()
-
-
-def get_all_usernames():
-    """Retrieve all usernames for ticket assignment."""
-
-    conn = get_db()
-
-    try:
-        rows = conn.execute(
-            "SELECT username FROM users"
-        ).fetchall()
-
-        return [row["username"] for row in rows]
 
     finally:
         conn.close()

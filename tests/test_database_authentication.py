@@ -728,7 +728,7 @@ class TestActivationMigration(unittest.TestCase):
 
         result = migrations.migrate(self.path)
 
-        self.assertEqual([m.version for m in result.applied], [5, 6])
+        self.assertEqual([m.version for m in result.applied], [5, 6, 7])
         self.assertEqual(self.version(), SCHEMA_VERSION)
         self.assertTrue(migrations.schema_status(self.path).is_current)
 
@@ -809,7 +809,7 @@ class TestActivationMigration(unittest.TestCase):
         status = migrations.schema_status(self.path)
 
         self.assertEqual(status.state, "outdated")
-        self.assertEqual([m.version for m in status.pending], [5, 6])
+        self.assertEqual([m.version for m in status.pending], [5, 6, 7])
 
     def test_upgraded_account_can_authenticate(self):
         migrations.migrate(self.path)

@@ -177,6 +177,26 @@ class TestHistorySchema(HistoryTestCase):
 
 class TestHistoryRecording(HistoryTestCase):
 
+    def setUp(self):
+        super().setUp()
+
+        # Tickets may only be assigned to real, active staff accounts, so
+        # the technicians these tests assign to must exist
+        for name in ("tech1", "tech2"):
+            self.add_technician(name)
+
+    def add_technician(self, username):
+        conn = db.get_db()
+        try:
+            with conn:
+                conn.execute(
+                    "INSERT INTO users (username, password_hash, role) "
+                    "VALUES (?, 'not-a-real-hash', 'technician')",
+                    (username,)
+                )
+        finally:
+            conn.close()
+
     def events(self, ticket_id):
         """History as (action, actor, field, old, new), newest first."""
         return [
@@ -461,6 +481,10 @@ class TestHistoryRecording(HistoryTestCase):
     def test_sql_in_values_is_stored_as_plain_text(self):
         ticket_id = self.new_ticket()
         attack = "x'); DELETE FROM tickets; --"
+
+        # Only a real staff account can be assigned, so the hostile text is
+        # a technician's username here; it must still be stored as text
+        self.add_technician(attack)
 
         db.update_ticket(ticket_id, "Open", attack, actor="admin")
 

@@ -626,7 +626,8 @@ class TestCsvExportWithSla(SlaRouteTestCase):
 
     HEADER = ["Ticket ID", "Title", "Description", "Priority", "Status",
               "Assigned To", "Created By", "Created (UTC)",
-              "Last Updated (UTC)"]
+              "Last Updated (UTC)", "SLA Status", "Response Due (UTC)",
+              "First Response (UTC)"]
 
     def setUp(self):
         super().setUp()
@@ -657,7 +658,7 @@ class TestCsvExportWithSla(SlaRouteTestCase):
 
         _, rows = self.export("/tickets/export?sla=overdue")
 
-        self.assertEqual(rows[0], self.HEADER)  # no SLA columns added
+        self.assertEqual(rows[0], self.HEADER)  # same columns as unfiltered
         self.assertEqual([int(r[0]) for r in rows[1:]],
                          [self.alice["overdue"]])
 

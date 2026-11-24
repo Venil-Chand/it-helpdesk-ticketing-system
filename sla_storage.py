@@ -1,10 +1,52 @@
 
+import re
 from datetime import datetime, timezone
 
 from sla import (
     assess_response_sla,
     calculate_deadline,
     require_aware_datetime
+)
+
+
+# ---------------------------------------------------
+# THE ONE ACCEPTED STORED TIMESTAMP FORMAT
+# ---------------------------------------------------
+#
+#   YYYY-MM-DD HH:MM:SS          (T or a space between date and time)
+#   optional .f, .ff or .fff     (up to milliseconds)
+#   optional Z or +HH:MM/-HH:MM  (offset up to 14:59; none means UTC)
+#
+# This covers everything the application writes (SQLite CURRENT_TIMESTAMP
+# and datetime.isoformat() in UTC) plus common hand-entered variants.
+# Python's fromisoformat() and SQLite's julianday() each accept extra,
+# different forms (such as "20261117T090000" or "2026-02-30"), which made
+# the ticket page and the dashboard disagree about damaged rows. Both
+# sides now accept exactly this format:
+#   Python  _STORED_TIMESTAMP below, then fromisoformat()
+#   SQL     STORED_TIMESTAMP_GLOBS, used by database._readable_timestamp_sql
+# Milliseconds are the limit because julianday() rounds to milliseconds;
+# more digits would let the two sides compare times differently.
+
+_STORED_TIMESTAMP = re.compile(
+    r"[1-9]\d{3}-\d{2}-\d{2}"
+    r"[T ](?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d"
+    r"(?:\.\d{1,3})?"
+    r"(?:Z|[+-](?:0\d|1[0-4]):[0-5]\d)?",
+    re.ASCII
+)
+
+_GLOB_DATE_TIME = (
+    "[1-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]"
+    "[T ][0-9][0-9]:[0-5][0-9]:[0-5][0-9]"
+)
+
+STORED_TIMESTAMP_GLOBS = tuple(
+    _GLOB_DATE_TIME + fraction + offset
+    for fraction in ("", ".[0-9]", ".[0-9][0-9]", ".[0-9][0-9][0-9]")
+    for offset in (
+        "", "Z", "[+-]0[0-9]:[0-5][0-9]", "[+-]1[0-4]:[0-5][0-9]"
+    )
 )
 
 
@@ -31,19 +73,28 @@ def parse_stored_utc(value):
 
     SQLite's CURRENT_TIMESTAMP is UTC but has no offset, for example
     "2026-11-17 08:00:00", so text without an offset is treated as UTC.
-    Text with an offset is converted to UTC. Malformed text raises
-    ValueError and a non-text value raises TypeError.
+    Text with an offset is converted to UTC. Text outside the accepted
+    format (see _STORED_TIMESTAMP) raises ValueError, and a non-text
+    value raises TypeError.
     """
 
     if not isinstance(value, str):
         raise TypeError("stored timestamp must be text")
 
+    if not _STORED_TIMESTAMP.fullmatch(value):
+        raise ValueError("stored timestamp is not in the accepted format")
+
+    # fromisoformat() also rejects impossible dates such as 30 February
     parsed = datetime.fromisoformat(value)
 
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         return parsed.replace(tzinfo=timezone.utc)
 
-    return parsed.astimezone(timezone.utc)
+    try:
+        return parsed.astimezone(timezone.utc)
+    except OverflowError:
+        # e.g. 9999-12-31T23:00:00-05:00 is after the last datetime
+        raise ValueError("stored timestamp is out of range") from None
 
 
 def get_ticket_sla(connection, ticket_id):

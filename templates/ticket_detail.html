@@ -60,7 +60,7 @@
 
         </div>
 
-        <!-- Response SLA: hidden for tickets created before SLA tracking -->
+        <!-- Response SLA: "Not Tracked" for tickets created before SLA tracking -->
         {% if sla %}
         {% set slac = {'Within SLA':'success', 'Due Soon':'warning', 'Overdue':'danger', 'Met':'success', 'Breached':'danger'} %}
 
@@ -74,17 +74,31 @@
             {{ sla['status'] }}
           </span>
 
+          {# utc_time converts to UTC first, exactly like the dashboard, so
+             a time stored with an offset is never mislabelled as UTC #}
           <div class="small text-muted mt-1">
             Due
-            <time datetime="{{ sla['response_due_at'] }}">{{ sla['response_due_at'][:16]|replace('T', ' ') }} UTC</time>
+            <time datetime="{{ sla['response_due_at'] }}">{{ sla['response_due_at']|utc_time }}</time>
           </div>
 
           {% if sla['first_response_at'] %}
           <div class="small text-muted">
             First response
-            <time datetime="{{ sla['first_response_at'] }}">{{ sla['first_response_at'][:16]|replace('T', ' ') }} UTC</time>
+            <time datetime="{{ sla['first_response_at'] }}">{{ sla['first_response_at']|utc_time }}</time>
           </div>
           {% endif %}
+        </div>
+        {% else %}
+        {# Same label the dashboard uses for tickets with no readable SLA #}
+        <div class="mb-3" data-testid="sla-not-tracked">
+          <p class="mb-1 text-muted small">
+            Response SLA
+          </p>
+
+          <span class="badge bg-secondary">
+            <i class="bi bi-stopwatch me-1" aria-hidden="true"></i>
+            Not Tracked
+          </span>
         </div>
         {% endif %}
 
@@ -95,6 +109,17 @@
         <p class="fw-semibold mb-3">
           {{ ticket['assigned_to'] or 'Unassigned' }}
         </p>
+
+        {% if assignee_problem %}
+        {# Staff only. The record is kept as it is; staff decide what to do. #}
+        <div class="alert alert-warning small py-2" role="status"
+             data-testid="assignee-not-eligible">
+          <i class="bi bi-exclamation-triangle-fill me-1" aria-hidden="true"></i>
+          This assignee can no longer receive tickets ({{ assignee_problem }}).
+          The assignment is kept for the record; reassign or unassign the
+          ticket when convenient.
+        </div>
+        {% endif %}
 
         <p class="mb-1 text-muted small">
           Last updated
@@ -170,6 +195,15 @@
                     id="assigned_to">
 
               <option value="">— Unassigned —</option>
+
+              {# Keep a no-longer-eligible assignee selected; otherwise the
+                 browser would pick "Unassigned" and saving a status change
+                 would silently remove the assignment #}
+              {% if ticket['assigned_to'] and ticket['assigned_to'] not in all_users %}
+              <option value="{{ ticket['assigned_to'] }}" selected>
+                {{ ticket['assigned_to'] }} (current, no longer eligible)
+              </option>
+              {% endif %}
 
               {% for u in all_users %}
 

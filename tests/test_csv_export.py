@@ -39,6 +39,8 @@ class TestCsvLayout(unittest.TestCase):
             "Ticket ID", "Title", "Description", "Priority", "Status",
             "Assigned To", "Created By", "Created (UTC)",
             "Last Updated (UTC)",
+            # Added after the original columns, so their positions stay
+            "SLA Status", "Response Due (UTC)", "First Response (UTC)",
         ]])
 
     def test_ticket_values_appear_in_column_order(self):
@@ -47,6 +49,8 @@ class TestCsvLayout(unittest.TestCase):
         self.assertEqual(rows[1], [
             "1", "Printer offline", "Paper jam", "High", "Open", "tech1",
             "alice", "2026-11-10 07:00:00", "2026-11-10 07:30:00",
+            # A row without SLA data gets empty SLA cells
+            "", "", "",
         ])
 
     def test_missing_values_become_empty_cells(self):

@@ -1194,7 +1194,7 @@ class TestSessionVersionMigration(unittest.TestCase):
 
         result = migrations.migrate(self.path)
 
-        self.assertEqual([m.version for m in result.applied], [6])
+        self.assertEqual([m.version for m in result.applied], [6, 7])
         self.assertEqual(self.version(), SCHEMA_VERSION)
         self.assertTrue(migrations.schema_status(self.path).is_current)
 

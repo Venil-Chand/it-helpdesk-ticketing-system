@@ -68,7 +68,9 @@ class TestHistoryTimeline(unittest.TestCase):
                 patch("app.db.get_comments", return_value=[]), \
                 patch("app.db.get_ticket_history", return_value=history), \
                 patch("app.db.get_ticket_sla_status", return_value=None), \
-                patch("app.db.get_all_usernames", return_value=["tech2"]):
+                patch("app.db.get_assignable_users",
+                      return_value=["tech2"]), \
+                patch("app.db.get_assignee_problem", return_value=None):
             response = self.client.get("/tickets/1")
 
         self.assertEqual(response.status_code, 200)
