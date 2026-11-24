@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import database
 import validation
+from helpdesk import auth
 from security_helpers import LOCAL_URL, TESTING_ENV, SecurityTestCase
 
 ONE_MIB = 1024 * 1024
@@ -390,7 +391,7 @@ class TestLoginLimits(InputLimitTestCase):
         )
 
     def test_oversized_password_is_not_hashed(self):
-        with patch.object(self.module, "check_password_hash") as checker:
+        with patch.object(auth, "check_password_hash") as checker:
             response = self.attempt("alice", "a" * 1025)
 
         checker.assert_not_called()
@@ -399,7 +400,7 @@ class TestLoginLimits(InputLimitTestCase):
 
     def test_password_at_limit_is_still_checked(self):
         with patch.object(
-            self.module, "check_password_hash", return_value=False
+            auth, "check_password_hash", return_value=False
         ) as checker:
             self.attempt("alice", "a" * 1024)
 

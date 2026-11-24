@@ -137,7 +137,7 @@
 
             <div class="col-6 col-md-4 col-xl-2">
                 <a
-                    href="{{ url_for('index', **dict(link_args|default({}), sla=key)) }}"
+                    href="{{ url_for('dashboard.index', **dict(link_args|default({}), sla=key)) }}"
                     class="card sla-card stat-card border-0 shadow-sm h-100 text-decoration-none{% if is_active %} sla-card-active{% endif %}"
                     data-sla-card="{{ key }}"
                     aria-label="{{ label }}: {{ count }} ticket{{ 's' if count != 1 else '' }}. Show only these tickets."
@@ -175,7 +175,7 @@
     <!-- Search and Filter Form -->
     <form
         method="GET"
-        action="{{ url_for('index') }}"
+        action="{{ url_for('dashboard.index') }}"
         class="d-flex gap-2 flex-wrap align-items-center flex-grow-1"
         role="search"
     >
@@ -305,7 +305,7 @@
               or active_sla != 'All' %}
 
             <a
-                href="{{ url_for('index') }}"
+                href="{{ url_for('dashboard.index') }}"
                 class="btn btn-outline-secondary btn-sm"
             >
                 <i class="bi bi-x-circle me-1"></i>
@@ -322,7 +322,7 @@
         <!-- Downloads every matching ticket across all pages. The link
              keeps the search and filters but never the page number. -->
         <a
-            href="{{ url_for('export_tickets', **link_args) }}"
+            href="{{ url_for('reports.export_tickets', **link_args) }}"
             class="btn btn-outline-success btn-sm"
             aria-label="Export matching tickets as CSV"
             download
@@ -332,7 +332,7 @@
         </a>
 
         <a
-            href="{{ url_for('new_ticket') }}"
+            href="{{ url_for('tickets.new_ticket') }}"
             class="btn btn-primary btn-sm"
         >
             <i class="bi bi-plus-lg me-1"></i>
@@ -387,7 +387,7 @@
                         <!-- Ticket Title -->
                         <td>
                             <a
-                                href="{{ url_for('ticket_detail', ticket_id=t['id']) }}"
+                                href="{{ url_for('tickets.ticket_detail', ticket_id=t['id']) }}"
                                 class="fw-semibold text-decoration-none"
                             >
                                 {{ t['title'] }}
@@ -516,7 +516,7 @@
                         <li class="page-item">
                             <a
                                 class="page-link"
-                                href="{{ url_for('index', page=pagination.page - 1, **link_args) }}"
+                                href="{{ url_for('dashboard.index', page=pagination.page - 1, **link_args) }}"
                                 aria-label="Previous page"
                             >
                                 <i class="bi bi-chevron-left" aria-hidden="true"></i>
@@ -556,7 +556,7 @@
                             <li class="page-item d-none d-sm-block">
                                 <a
                                     class="page-link"
-                                    href="{{ url_for('index', page=number, **link_args) }}"
+                                    href="{{ url_for('dashboard.index', page=number, **link_args) }}"
                                     aria-label="Page {{ number }}"
                                 >
                                     {{ number }}
@@ -572,7 +572,7 @@
                         <li class="page-item">
                             <a
                                 class="page-link"
-                                href="{{ url_for('index', page=pagination.page + 1, **link_args) }}"
+                                href="{{ url_for('dashboard.index', page=pagination.page + 1, **link_args) }}"
                                 aria-label="Next page"
                             >
                                 Next
@@ -610,7 +610,7 @@
             </p>
 
             <a
-                href="{{ url_for('index') }}"
+                href="{{ url_for('dashboard.index') }}"
                 class="btn btn-outline-primary btn-sm"
             >
                 Clear Search
@@ -625,7 +625,7 @@
             </p>
 
             <a
-                href="{{ url_for('index') }}"
+                href="{{ url_for('dashboard.index') }}"
                 class="btn btn-outline-primary btn-sm"
             >
                 Clear Filters
@@ -637,7 +637,7 @@
                 No tickets found.
             </p>
 
-            <a href="{{ url_for('new_ticket') }}">
+            <a href="{{ url_for('tickets.new_ticket') }}">
                 Create the first one.
             </a>
 

@@ -190,8 +190,11 @@ class TestHistoryRoutes(unittest.TestCase):
                                     data={"status": "Closed"})
 
         self.assertEqual(response.status_code, 404)
+
+        conn = db.get_db()
+        self.addCleanup(conn.close)
         self.assertEqual(
-            db.get_db().execute("SELECT COUNT(*) FROM ticket_history")
+            conn.execute("SELECT COUNT(*) FROM ticket_history")
             .fetchone()[0],
             0
         )

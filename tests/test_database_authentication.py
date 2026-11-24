@@ -14,6 +14,7 @@ import sqlite3
 import tempfile
 import time
 import unittest
+from contextlib import closing
 from unittest.mock import patch
 
 from werkzeug.security import generate_password_hash
@@ -86,7 +87,8 @@ class AuthTestCase(unittest.TestCase):
         return client
 
     def add_user(self, username, role):
-        with sqlite3.connect(self.db_path) as conn:
+        # closing() closes the connection; "with conn" only commits it
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             cursor = conn.execute(
                 "INSERT INTO users (username, password_hash, role) "
                 "VALUES (?, ?, ?)",
@@ -597,7 +599,7 @@ class TestOwnership(AuthTestCase):
 
 class TestEveryRouteIsProtected(AuthTestCase):
 
-    PUBLIC_ENDPOINTS = {"login", "logout", "static"}
+    PUBLIC_ENDPOINTS = {"auth.login", "auth.logout", "static"}
 
     def test_every_other_route_requires_a_login(self):
         for rule in app.url_map.iter_rules():

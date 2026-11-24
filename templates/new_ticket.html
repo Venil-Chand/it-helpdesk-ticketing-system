@@ -10,7 +10,7 @@
     <!-- Page heading -->
     <div class="d-flex align-items-center mb-3">
 
-      <a href="{{ url_for('index') }}"
+      <a href="{{ url_for('dashboard.index') }}"
          class="btn btn-outline-secondary btn-sm me-3">
         <i class="bi bi-arrow-left"></i>
       </a>
@@ -26,7 +26,7 @@
     <div class="card shadow-sm border-0">
       <div class="card-body p-4">
 
-        <form method="POST" action="{{ url_for('new_ticket') }}">
+        <form method="POST" action="{{ url_for('tickets.new_ticket') }}">
 
           <!-- CSRF protection -->
           <input
@@ -136,7 +136,7 @@
               Submit Ticket
             </button>
 
-            <a href="{{ url_for('index') }}"
+            <a href="{{ url_for('dashboard.index') }}"
                class="btn btn-outline-secondary">
               Cancel
             </a>

@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import database
 import security_config as config
+from helpdesk import clock
 from security_helpers import (
     DEVELOPMENT_ENV,
     HTTP_URL,
@@ -187,15 +188,15 @@ class TestSessionProtectionsInProduction(SecurityTestCase):
 
     def test_session_expires_after_eight_hours(self):
         client = self.login("alice")
-        now = self.module.current_time()
+        now = clock.current_time()
 
         with patch.object(
-            self.module, "current_time", return_value=now + 8 * 3600 - 60
+            clock, "current_time", return_value=now + 8 * 3600 - 60
         ):
             self.assertEqual(self.get(client, "/").status_code, 200)
 
         with patch.object(
-            self.module, "current_time", return_value=now + 8 * 3600
+            clock, "current_time", return_value=now + 8 * 3600
         ):
             response = self.get(client, "/")
 
@@ -288,6 +289,7 @@ class TestSecurityHeaders(SecurityTestCase):
         ):
             with self.subTest(path=path):
                 response = self.get(client, path)
+                self.addCleanup(response.close)
 
                 self.assertEqual(response.status_code, status)
                 self.assert_required_headers(response)
@@ -319,6 +321,7 @@ class TestSecurityHeaders(SecurityTestCase):
 
     def test_public_static_files_stay_cacheable(self):
         response = self.get(self.app.test_client(), "/static/style.css")
+        self.addCleanup(response.close)
 
         self.assertNotIn("no-store", response.headers.get("Cache-Control", ""))
 
@@ -443,6 +446,7 @@ class TestTemplateCompatibility(SecurityTestCase):
         self.assertIn("data-auto-submit", html)
 
         script = self.get(self.app.test_client(), "/static/app.js")
+        self.addCleanup(script.close)
         self.assertEqual(script.status_code, 200)
         self.assertIn("data-auto-submit", script.text)
 

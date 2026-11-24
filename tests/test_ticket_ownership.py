@@ -90,7 +90,7 @@ class TestTicketOwnership(unittest.TestCase):
             "app.db.get_assignee_problem",
             return_value=None
         ), patch(
-            "app.render_template",
+            "helpdesk.tickets.render_template",
             return_value="Ticket details"
         ):
 
@@ -144,7 +144,7 @@ class TestTicketOwnership(unittest.TestCase):
             "app.db.get_assignee_problem",
             return_value=None
         ), patch(
-            "app.render_template",
+            "helpdesk.tickets.render_template",
             return_value="Ticket details"
         ):
 
@@ -238,7 +238,7 @@ class TestTicketOwnership(unittest.TestCase):
             "app.db.get_sla_stats",
             return_value={}
         ) as mock_sla_stats_fn, patch(
-            "app.render_template",
+            "helpdesk.dashboard.render_template",
             return_value="Dashboard"
         ) as mock_template:
 

@@ -48,7 +48,7 @@ The project demonstrates Python programming, web development, relational databas
 - **Account setup** — create the first administrator using a terminal script
 - **Password changes** — verify the current password before changing it
 - **Versioned database migrations** — explicit `flask --app app init-db` and read-only `db-status` commands; upgrades run in one transaction and never seed accounts
-- **Automated tests** — 829 tests covering authentication, authorization, CSRF, search, pagination, CSV export, history, assignment rules, SLA policy and monitoring, and database migrations
+- **Automated tests** — 899 tests covering the application factory, authentication, authorization, CSRF, search, pagination, CSV export, history, assignment rules, SLA policy and monitoring, and database migrations
 
 ---
 
@@ -354,7 +354,18 @@ If a database was ever initialised with that script, make sure every account cre
 
 ```text
 it-helpdesk-ticketing-system/
-├── app.py
+├── app.py                       (entry point: app = create_app())
+├── helpdesk/                    (the web application package)
+│   ├── __init__.py              (create_app(): the application factory)
+│   ├── security.py              (HTTPS, CSRF, rate limit, proxy, headers)
+│   ├── errors.py                (plain-text 400/413 and 503 responses)
+│   ├── auth.py                  (blueprint "auth": login, logout, sessions)
+│   ├── dashboard.py             (blueprint "dashboard": ticket list, SLA cards)
+│   ├── tickets.py               (blueprint "tickets": create, view, update)
+│   ├── reports.py               (blueprint "reports": CSV export)
+│   ├── ticket_filters.py        (filters shared by dashboard and export)
+│   ├── cli.py                   (db-status, init-db, assignment-audit)
+│   └── clock.py                 (the one clock every route reads)
 ├── database.py
 ├── sla.py
 ├── sla_storage.py
@@ -375,6 +386,7 @@ it-helpdesk-ticketing-system/
 │   ├── test_authorization.py
 │   ├── auth_helpers.py          (shared sign-in helper for route tests)
 │   ├── security_helpers.py      (private app copies for security tests)
+│   ├── test_application_factory.py
 │   ├── test_csrf.py
 │   ├── test_database_authentication.py
 │   ├── test_database_filters.py
@@ -413,7 +425,8 @@ it-helpdesk-ticketing-system/
 
 | File | Purpose |
 |---|---|
-| `app.py` | Flask application, routes and login logic |
+| `app.py` | Entry point: builds the application with `create_app()` for `python app.py`, `flask --app app` and WSGI servers (`app:app`) |
+| `helpdesk/` | The Flask application: factory, security hooks, blueprints and CLI commands (see [Application Architecture](#application-architecture)) |
 | `database.py` | SQLite queries and ticket functions, including the SLA dashboard queries; `init_db()` runs the migrations |
 | `sla.py` | Response SLA policy: deadlines per priority and status rules |
 | `sla_storage.py` | Stores SLA deadlines and first responses; reads stored UTC timestamps |
@@ -423,9 +436,156 @@ it-helpdesk-ticketing-system/
 | `security_config.py` | Validates environment settings and defines cookies, headers and the CSP |
 | `validation.py` | Server-side text and request size limits |
 | `proxy_trust.py` | Believes forwarded headers only from configured proxies |
-| `tests/` | 829 automated tests covering auth, CSRF, ownership, search, pagination, CSV export, history, assignment, SLA, migrations and production security |
+| `tests/` | 899 automated tests covering the application factory, auth, CSRF, ownership, search, pagination, CSV export, history, assignment, SLA, migrations and production security |
 
 The local `helpdesk.db` database and `.env` file are excluded from version control.
+
+---
+
+## Application Architecture
+
+The whole web application used to live in one 1,500-line `app.py`. It now uses two standard Flask patterns: an **application factory** and **blueprints**. Nothing a user can see changed: every URL, form, page, status code and security rule is the same.
+
+### What is an application factory?
+
+A *factory* is a function whose job is to build and return a new object. `create_app()` in `helpdesk/__init__.py` builds a complete, configured Flask application each time it is called:
+
+```python
+from helpdesk import create_app
+
+app = create_app()          # reads APP_ENV, SECRET_KEY, ... from the environment
+```
+
+Before, the application was created at the top of `app.py` the moment the file was imported, so there could only ever be one, configured by whatever environment happened to be set at import time. With a factory:
+
+- **Configuration happens in one place, in a fixed order.** Reading `create_app()` from top to bottom shows everything the application is made of.
+- **Tests can build as many independent applications as they need.** A test can build a production application and a development application side by side, each with its own settings, secret key and rate-limit counters, without reloading modules:
+
+  ```python
+  app = create_app(environ={"APP_ENV": "testing", "SECRET_KEY": "..."},
+                   config={"WTF_CSRF_ENABLED": False})
+  ```
+
+  Passing `environ` means `.env` is never read, so the test is isolated from your local settings.
+- **Unsafe settings still stop the program before anything is served.** `create_app()` raises `ConfigurationError` exactly as the old import did.
+
+`create_app()` does these steps, in this order:
+
+1. Load `.env` (development only, and only when `environ` is not given).
+2. Validate the security settings (`security_config.load_settings`).
+3. Create the Flask object and apply cookie, CSRF, size-limit and session settings.
+4. `register_security()`: proxy handling, HTTPS check, CSRF, rate limiter, security headers.
+5. `register_error_handlers()`: plain-text 400 and 413, and the 503 shown while the database schema is not ready.
+6. Register `load_current_user()`, which reads the signed-in account from the database before every view.
+7. Register the four blueprints.
+8. Attach the login rate limit and the CLI commands.
+
+### What is a blueprint?
+
+A *blueprint* is a group of related routes that can be plugged into an application. It is written like a small application (`@bp.route(...)` instead of `@app.route(...)`), and does nothing until `create_app()` registers it.
+
+| Blueprint | File | URLs | Purpose |
+|---|---|---|---|
+| `auth` | `helpdesk/auth.py` | `/login`, `/logout` | Signing in and out. Also provides `login_required`, `staff_required` and `load_current_user()` for every other blueprint |
+| `dashboard` | `helpdesk/dashboard.py` | `/` | Ticket list with search, filters, SLA monitoring cards and pagination |
+| `tickets` | `helpdesk/tickets.py` | `/tickets/new`, `/tickets/<id>`, `/tickets/<id>/update`, `/tickets/<id>/comment` | Creating, viewing, updating, assigning and commenting on tickets, with the ownership rules |
+| `reports` | `helpdesk/reports.py` | `/tickets/export` | CSV export of the tickets the user may see |
+
+There is no administration blueprint because the helpdesk has no administration web pages yet. Administration runs through the command line (`flask --app app ...` and `setup_accounts.py`).
+
+Blueprints keep each file focused on one job, so a change to the CSV export cannot accidentally break login, and each file is short enough to read in one sitting.
+
+### Endpoint names
+
+Flask gives every route an *endpoint* name, used by `url_for()` to build links. Inside a blueprint the name is prefixed with the blueprint's name. The URLs did not change, but the names did:
+
+| Old endpoint | New endpoint | URL |
+|---|---|---|
+| `index` | `dashboard.index` | `/` |
+| `login` | `auth.login` | `/login` |
+| `logout` | `auth.logout` | `/logout` |
+| `new_ticket` | `tickets.new_ticket` | `/tickets/new` |
+| `ticket_detail` | `tickets.ticket_detail` | `/tickets/<id>` |
+| `update_ticket` | `tickets.update_ticket` | `/tickets/<id>/update` |
+| `add_comment` | `tickets.add_comment` | `/tickets/<id>/comment` |
+| `export_tickets` | `reports.export_tickets` | `/tickets/export` |
+
+Write `url_for("tickets.ticket_detail", ticket_id=3)`, never a hard-coded `"/tickets/3"`. The old names no longer exist, so a forgotten one fails immediately with a `BuildError` instead of producing a broken link. A test checks that every `url_for()` in the templates resolves.
+
+### Security architecture
+
+Every security hook is attached to the **application**, not to a blueprint, so it protects every route in every blueprint, including routes added later. Each runs once per request, in this order:
+
+```text
+request
+  │
+  ├─ TrustedProxyMiddleware   forwarded headers believed only from TRUSTED_PROXY_IPS
+  ├─ Host check               only TRUSTED_HOSTS are served
+  ├─ require_https            production refuses plain HTTP (400)
+  ├─ CSRF protection          every POST needs a valid token (400)
+  ├─ rate limiter             5 login attempts per minute per address (429)
+  ├─ load_current_user        account, role, active flag and session version read from SQLite
+  │
+  ├─ view (blueprint route)   login_required / staff_required / ownership 404
+  │
+  └─ add_security_headers     CSP, X-Frame-Options, no-store, HSTS (production HTTPS) on every response
+```
+
+Each application gets its **own** CSRF and rate-limiter objects. A rate limiter keeps its counters on the object, so two applications sharing one would also share login attempt counts.
+
+### Database connections and transactions
+
+The factory changed nothing in the database layer. Every function in `database.py` opens its own short-lived connection and closes it in a `finally` block. Writes run inside `with conn:` (and `BEGIN IMMEDIATE` for ticket updates), so a ticket change and its history rows are saved together or not at all. Tests check that every connection opened during a request, including error paths and CLI commands, is closed.
+
+`database.DB_PATH` is still one setting for the whole process. Tests point it at a temporary file. Two applications in one process always use the same database file.
+
+### Development commands
+
+```bash
+python app.py                        # development server on http://127.0.0.1:5000
+flask --app app routes               # list every URL, method and endpoint
+```
+
+`python app.py` refuses to start in production and when the schema is not up to date. `flask --app app run` also starts a development server, but skips both of those checks, so prefer `python app.py`.
+
+### Database commands
+
+```bash
+flask --app app db-status            # read-only; exit code 0 only if the schema is current
+flask --app app init-db              # create the database or apply pending migrations
+flask --app app init-db --backup-to backup.db   # verified backup first, then migrate
+flask --app app assignment-audit     # read-only; lists tickets with ineligible assignees
+python setup_accounts.py             # first administrator and password changes
+```
+
+### Testing commands
+
+```bash
+python -m unittest discover -s tests -v                                   # everything
+python -m unittest discover -s tests -p "test_application_factory.py" -v  # factory and blueprints
+```
+
+To freeze time in a test, patch the single clock: `helpdesk.clock.current_time` (session ages) or `helpdesk.clock.datetime` (SLA statuses on the dashboard, ticket page and CSV export).
+
+### Adding a new route
+
+1. Pick the blueprint whose job the route belongs to (for example, a new report goes in `helpdesk/reports.py`).
+2. Write the view with the blueprint's decorator, and protect it:
+
+   ```python
+   @bp.route("/tickets/summary")
+   @login_required                     # or @staff_required for staff-only pages
+   def ticket_summary():
+       filters = current_ticket_filters()   # ownership comes from the account
+       ...
+   ```
+
+3. Link to it with `url_for("reports.ticket_summary")`.
+4. Write tests: signed-out visitors are redirected, other users' data is not shown, and POST forms are refused without a CSRF token.
+
+You do **not** need to add CSRF, security headers, HTTPS checks or account loading to a new route. The application applies them automatically.
+
+To add a completely new area, create `helpdesk/<name>.py` with `bp = Blueprint("<name>", __name__)` and add `<name>.bp` to `BLUEPRINTS` in `helpdesk/__init__.py`.
 
 ---
 
@@ -435,7 +595,7 @@ The local `helpdesk.db` database and `.env` file are excluded from version contr
 
 Flask handles HTTP requests and connects URLs to Python functions.
 
-For example, visiting `/tickets/3` calls the route responsible for displaying ticket number 3.
+For example, visiting `/tickets/3` calls `ticket_detail()` in `helpdesk/tickets.py`, which displays ticket number 3.
 
 ### SQLite
 
@@ -917,7 +1077,7 @@ python -m unittest tests.test_production_config tests.test_security_headers_cook
 python -m pip_audit --strict -r requirements.txt
 ```
 
-These tests load a private copy of the application for each environment and use temporary databases only.
+These tests build a separate application for each environment and use temporary databases only. Older tests load a private copy of `app.py` (`tests/security_helpers.py`); newer ones call `create_app(environ=...)` directly.
 
 ### Remaining limitations
 
@@ -926,6 +1086,7 @@ These tests load a private copy of the application for each environment and use 
 - Rate limits are in memory, so they reset on restart and are not shared between workers.
 - `APP_ENV` defaults to development. A server started without it accepts only localhost hostnames, but it does not enforce HTTPS.
 - `flask run` cannot be blocked in production by the app itself, so the deployment must use a WSGI server.
+- Every `flask --app app ...` command (including `db-status` and `init-db`) loads `.env` through Flask's own CLI, even when `APP_ENV=production`. It never overrides a variable that is already set, but it can fill in missing ones. On production servers, set `FLASK_SKIP_DOTENV=1` or keep no `.env` file.
 - Assignees must be active technicians or administrators; tickets assigned before this rule are kept and flagged rather than changed.
 - Bidirectional text control characters are allowed, so ticket text can display in a misleading order.
 - Pages depend on the cdnjs CDN. Integrity hashes stop altered files, but an outage would remove styling.
@@ -935,7 +1096,7 @@ These tests load a private copy of the application for each environment and use 
 
 ## Automated Testing
 
-The project includes 829 automated tests using Python's built-in `unittest` framework.
+The project includes 899 automated tests using Python's built-in `unittest` framework. CI runs them on Python 3.13.
 
 To run the full suite:
 
@@ -989,6 +1150,7 @@ python -m unittest tests.test_search_route -v
 | `test_proxy_trust.py` | 23 | Forwarded-header trust, rate-limit spoofing, HTTPS detection and Host validation |
 | `test_assignment_validation.py` | 45 | Valid, missing, deleted, deactivated and wrong-role assignees; tampered requests; refusal saves nothing; former assignees kept; the audit command; username reuse and renaming; migration 7 |
 | `test_sla_policy.py` | 30 | Deadlines; what is and is not a first response; reopened, closed and unanswered tickets; ticket page, dashboard and CSV agreeing; time zones; the shared timestamp format |
+| `test_application_factory.py` | 70 | `create_app()` settings; independent applications (config, HTTPS, headers, secret keys, rate-limit counters); exact URL map and endpoint names; every template `url_for()`; security hooks registered once and in order; auth, ownership, sessions, CSRF and headers on every blueprint; tickets, assignment, SLA and CSV; CLI commands; `.env` rules; production failures; every SQLite connection closed |
 
 Tests never touch the real `helpdesk.db`:
 
@@ -1032,7 +1194,7 @@ Coverage is still not exhaustive. Concurrent migration attempts are tested, but 
 | Web-based account administration | Not implemented |
 | Ticket assignment | Only active technicians and administrators; enforced in the database transaction; tested |
 | Username reuse | Usernames cannot be renamed or given to a new account while ticket records use them (migration 7) |
-| Automated security testing | 829 tests covering auth, CSRF, ownership, search, pagination, export, history, assignment, SLA, migrations and production security |
+| Automated security testing | 899 tests covering the application factory, auth, CSRF, ownership, search, pagination, export, history, assignment, SLA, migrations and production security |
 
 **Session limits:** a stolen cookie remains usable until the user logs out, changes their password, is deactivated, or the 8-hour limit passes. Logout cannot target a single device. A request already being processed when a session is revoked may finish. Local development uses plain HTTP, so it must not be exposed to an untrusted network.
 
