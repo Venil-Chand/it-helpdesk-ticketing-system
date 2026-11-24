@@ -3,7 +3,7 @@ The response SLA policy, end to end, and agreement between every place
 that shows an SLA.
 
 Every test uses its own temporary database with the real migrations. The
-route clock is frozen by replacing app.datetime, as in the SLA dashboard
+route clock is frozen by replacing helpdesk.clock.datetime, as in the SLA dashboard
 tests, so the dashboard, the CSV export and the ticket page are all
 evaluated at the same known moment. The real helpdesk.db is never opened.
 
@@ -64,7 +64,7 @@ class SlaPolicyTestCase(unittest.TestCase):
 
         for patcher in (
             patch.object(db, "DB_PATH", self.db_path),
-            patch("app.datetime", FrozenDateTime),
+            patch("helpdesk.clock.datetime", FrozenDateTime),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)

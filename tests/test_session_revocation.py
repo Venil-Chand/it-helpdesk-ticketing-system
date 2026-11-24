@@ -311,11 +311,11 @@ class TestLogoutRevocation(SessionTestCase):
 class TestSessionExpiry(SessionTestCase):
 
     def login_at(self, moment, username="alice"):
-        with patch("app.current_time", return_value=moment):
+        with patch("helpdesk.clock.current_time", return_value=moment):
             self.login(username)
 
     def get_at(self, moment, url="/", client=None):
-        with patch("app.current_time", return_value=moment):
+        with patch("helpdesk.clock.current_time", return_value=moment):
             return (client or self.client).get(url)
 
     def test_maximum_lifetime_is_eight_hours(self):
@@ -374,7 +374,7 @@ class TestSessionExpiry(SessionTestCase):
                 self.set_session(user_id=self.ids["root"],
                                  issued_at=START - MAX_AGE)
 
-                with patch("app.current_time", return_value=START):
+                with patch("helpdesk.clock.current_time", return_value=START):
                     response = self.send(method, url, data)
 
                 self.assert_sent_to_login(response)
@@ -402,7 +402,7 @@ class TestSessionExpiry(SessionTestCase):
         self.login_at(START)
         expired = self.client_with_cookie(self.cookie_of())
 
-        with patch("app.current_time", return_value=START + MAX_AGE):
+        with patch("helpdesk.clock.current_time", return_value=START + MAX_AGE):
             expired.post("/logout")
 
         self.assertEqual(self.version_of("alice"), 1)

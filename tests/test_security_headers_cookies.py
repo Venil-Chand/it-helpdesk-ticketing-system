@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import database
 import security_config as config
+from helpdesk import clock
 from security_helpers import (
     DEVELOPMENT_ENV,
     HTTP_URL,
@@ -187,15 +188,15 @@ class TestSessionProtectionsInProduction(SecurityTestCase):
 
     def test_session_expires_after_eight_hours(self):
         client = self.login("alice")
-        now = self.module.current_time()
+        now = clock.current_time()
 
         with patch.object(
-            self.module, "current_time", return_value=now + 8 * 3600 - 60
+            clock, "current_time", return_value=now + 8 * 3600 - 60
         ):
             self.assertEqual(self.get(client, "/").status_code, 200)
 
         with patch.object(
-            self.module, "current_time", return_value=now + 8 * 3600
+            clock, "current_time", return_value=now + 8 * 3600
         ):
             response = self.get(client, "/")
 

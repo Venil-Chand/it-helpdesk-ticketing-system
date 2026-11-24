@@ -5,7 +5,7 @@ Nothing in the database layer is mocked. Each request goes through the
 real Flask route, the real SQL against a temporary SQLite database and
 the real template, and the tests read the rendered HTML or CSV.
 
-The route's clock is frozen at NOW by replacing app.datetime, so SLA
+The route's clock is frozen at NOW by replacing helpdesk.clock.datetime, so SLA
 statuses are exact and never depend on when the tests run.
 
 The real helpdesk.db is never opened.
@@ -68,7 +68,7 @@ class SlaRouteTestCase(unittest.TestCase):
 
         for target in (
             patch.object(db, "DB_PATH", self.db_path),
-            patch("app.datetime", FrozenDateTime),
+            patch("helpdesk.clock.datetime", FrozenDateTime),
         ):
             target.start()
             self.addCleanup(target.stop)
@@ -496,7 +496,7 @@ class TestSlaRowDisplay(SlaRouteTestCase):
 
     def real_now_status(self, ticket_id):
         """Dashboard status using the real clock (comments use it too)."""
-        with patch("app.datetime", datetime):
+        with patch("helpdesk.clock.datetime", datetime):
             self.login_as("admin", "admin")
             return self.row_statuses(self.get("/"))[ticket_id]
 

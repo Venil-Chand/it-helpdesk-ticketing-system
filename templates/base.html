@@ -43,7 +43,7 @@
   <nav class="navbar navbar-expand-md navbar-dark bg-primary px-3">
 
     <!-- Application name -->
-    <a class="navbar-brand fw-bold" href="{{ url_for('index') }}">
+    <a class="navbar-brand fw-bold" href="{{ url_for('dashboard.index') }}">
       <i class="bi bi-headset me-1"></i>
       IT Helpdesk
     </a>
@@ -70,7 +70,7 @@
 
         <!-- Dashboard -->
         <li class="nav-item">
-          <a class="nav-link" href="{{ url_for('index') }}">
+          <a class="nav-link" href="{{ url_for('dashboard.index') }}">
             <i class="bi bi-speedometer2 me-1"></i>
             Dashboard
           </a>
@@ -78,7 +78,7 @@
 
         <!-- Create ticket -->
         <li class="nav-item">
-          <a class="nav-link" href="{{ url_for('new_ticket') }}">
+          <a class="nav-link" href="{{ url_for('tickets.new_ticket') }}">
             <i class="bi bi-plus-circle me-1"></i>
             New Ticket
           </a>
@@ -116,7 +116,7 @@
 
           <form
             method="POST"
-            action="{{ url_for('logout') }}"
+            action="{{ url_for('auth.logout') }}"
             class="d-inline"
           >
 

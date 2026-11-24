@@ -597,7 +597,7 @@ class TestOwnership(AuthTestCase):
 
 class TestEveryRouteIsProtected(AuthTestCase):
 
-    PUBLIC_ENDPOINTS = {"login", "logout", "static"}
+    PUBLIC_ENDPOINTS = {"auth.login", "auth.logout", "static"}
 
     def test_every_other_route_requires_a_login(self):
         for rule in app.url_map.iter_rules():

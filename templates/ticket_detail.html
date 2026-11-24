@@ -13,7 +13,7 @@
 
 <div class="d-flex align-items-center mb-3">
 
-  <a href="{{ url_for('index') }}"
+  <a href="{{ url_for('dashboard.index') }}"
      class="btn btn-outline-secondary btn-sm me-3">
     <i class="bi bi-arrow-left"></i>
   </a>
@@ -147,7 +147,7 @@
       <div class="card-body">
 
         <form method="POST"
-              action="{{ url_for('update_ticket', ticket_id=ticket['id']) }}">
+              action="{{ url_for('tickets.update_ticket', ticket_id=ticket['id']) }}">
 
           <!-- CSRF PROTECTION: UPDATE TICKET -->
           <input
@@ -325,7 +325,7 @@
       <div class="card-body">
 
         <form method="POST"
-              action="{{ url_for('add_comment', ticket_id=ticket['id']) }}">
+              action="{{ url_for('tickets.add_comment', ticket_id=ticket['id']) }}">
 
           <!-- CSRF PROTECTION: ADD COMMENT -->
           <input
