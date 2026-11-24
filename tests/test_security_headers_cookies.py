@@ -289,6 +289,7 @@ class TestSecurityHeaders(SecurityTestCase):
         ):
             with self.subTest(path=path):
                 response = self.get(client, path)
+                self.addCleanup(response.close)
 
                 self.assertEqual(response.status_code, status)
                 self.assert_required_headers(response)
@@ -320,6 +321,7 @@ class TestSecurityHeaders(SecurityTestCase):
 
     def test_public_static_files_stay_cacheable(self):
         response = self.get(self.app.test_client(), "/static/style.css")
+        self.addCleanup(response.close)
 
         self.assertNotIn("no-store", response.headers.get("Cache-Control", ""))
 
@@ -444,6 +446,7 @@ class TestTemplateCompatibility(SecurityTestCase):
         self.assertIn("data-auto-submit", html)
 
         script = self.get(self.app.test_client(), "/static/app.js")
+        self.addCleanup(script.close)
         self.assertEqual(script.status_code, 200)
         self.assertIn("data-auto-submit", script.text)
 
