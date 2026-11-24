@@ -48,7 +48,7 @@ The project demonstrates Python programming, web development, relational databas
 - **Account setup** — create the first administrator using a terminal script
 - **Password changes** — verify the current password before changing it
 - **Versioned database migrations** — explicit `flask --app app init-db` and read-only `db-status` commands; upgrades run in one transaction and never seed accounts
-- **Automated tests** — 615 tests covering authentication, authorization, CSRF, search, pagination, CSV export, history, SLA monitoring and database migrations
+- **Automated tests** — 754 tests covering authentication, authorization, CSRF, search, pagination, CSV export, history, SLA monitoring and database migrations
 
 ---
 
@@ -359,6 +359,9 @@ it-helpdesk-ticketing-system/
 ├── csv_export.py
 ├── setup_accounts.py
 ├── migrations.py
+├── security_config.py
+├── validation.py
+├── proxy_trust.py
 ├── requirements.txt
 ├── .env.example
 ├── .gitignore
@@ -368,9 +371,11 @@ it-helpdesk-ticketing-system/
 │   ├── test_authentication.py
 │   ├── test_authorization.py
 │   ├── auth_helpers.py          (shared sign-in helper for route tests)
+│   ├── security_helpers.py      (private app copies for security tests)
 │   ├── test_csrf.py
 │   ├── test_database_authentication.py
 │   ├── test_database_filters.py
+│   ├── test_input_limits.py
 │   ├── test_logout.py
 │   ├── test_migrations.py
 │   ├── test_migration_cli.py
@@ -378,8 +383,11 @@ it-helpdesk-ticketing-system/
 │   ├── test_pagination_db.py
 │   ├── test_pagination_integration.py
 │   ├── test_pagination_route.py
+│   ├── test_production_config.py
+│   ├── test_proxy_trust.py
 │   ├── test_rate_limit.py
 │   ├── test_search_route.py
+│   ├── test_security_headers_cookies.py
 │   ├── test_session_revocation.py
 │   ├── test_sla_dashboard_db.py
 │   ├── test_sla_dashboard_routes.py
@@ -393,6 +401,7 @@ it-helpdesk-ticketing-system/
 │   ├── new_ticket.html
 │   └── ticket_detail.html
 └── static/
+    ├── app.js
     └── style.css
 ```
 
@@ -407,7 +416,10 @@ it-helpdesk-ticketing-system/
 | `csv_export.py` | Builds safe CSV files from ticket rows |
 | `setup_accounts.py` | Initial administrator setup and password changes |
 | `migrations.py` | Versioned, transaction-safe schema migrations (replaces the retired `migrate.py`) |
-| `tests/` | 615 automated tests covering auth, CSRF, ownership, search, pagination, CSV export, history, SLA and migrations |
+| `security_config.py` | Validates environment settings and defines cookies, headers and the CSP |
+| `validation.py` | Server-side text and request size limits |
+| `proxy_trust.py` | Believes forwarded headers only from configured proxies |
+| `tests/` | 754 automated tests covering auth, CSRF, ownership, search, pagination, CSV export, history, SLA, migrations and production security |
 
 The local `helpdesk.db` database and `.env` file are excluded from version control.
 
@@ -664,9 +676,143 @@ The SLA cards, rows and filter use exactly the same ownership rule as the ticket
 
 ---
 
+## Production Security Configuration
+
+The application chooses its security behaviour from `APP_ENV`. Local development needs no new settings. **This project has not been deployed publicly**, and the deployment steps below are requirements to meet first.
+
+### Development compared with production
+
+| Setting | `development` (default) | `testing` | `production` |
+|---|---|---|---|
+| Reads `.env` | Yes | No | No |
+| `SECRET_KEY` | Required | Required | Required, 32+ characters, not a placeholder or repeated pattern |
+| Debug mode | Allowed | Allowed | Startup is refused if `FLASK_DEBUG` is on |
+| `python app.py` | Runs | Runs | Refused; use a production WSGI server |
+| Accepted hosts | `localhost`, `127.0.0.1` | `localhost`, `127.0.0.1` | Only `TRUSTED_HOSTS` |
+| Plain HTTP | Works | Works | Refused with 400 |
+| Cookie name | `session` | `session` | `__Host-helpdesk_session` |
+| Cookie `Secure` | Off, so HTTP login works | Off | On |
+| HSTS | Never | Never | HTTPS responses only |
+
+If production settings are missing or unsafe, the application stops before accepting traffic. Errors name the variable but never print its value.
+
+### Production environment variables
+
+Set these in the service environment. `.env` is deliberately ignored in production.
+
+| Variable | Required | Example | Meaning |
+|---|---|---|---|
+| `APP_ENV` | Yes | `production` | Turns on every production check |
+| `SECRET_KEY` | Yes | Output of `python3 -c "import secrets; print(secrets.token_hex(32))"` | Signs session cookies and CSRF tokens |
+| `TRUSTED_HOSTS` | Yes | `helpdesk.example.org` | Comma-separated exact hostnames, with no scheme, port or wildcard |
+| `TRUSTED_PROXY_COUNT` | Behind a proxy | `1` | Number of reverse proxies in front of the app (0 to 5) |
+| `TRUSTED_PROXY_IPS` | Behind a proxy | `127.0.0.1` | Comma-separated proxy IPs or CIDR ranges |
+
+### Secure cookies and sessions
+
+- **HttpOnly** stops JavaScript from reading the session cookie, which limits what a script injection can steal.
+- **SameSite=Lax** keeps the cookie off cross-site form posts while normal links to a ticket still work.
+- **Secure** means browsers send the cookie only over HTTPS. It is off in development because `http://127.0.0.1:5000` would otherwise lose its login.
+- **The `__Host-` prefix** makes browsers reject the cookie unless it is Secure, host-only and for path `/`, so a sibling subdomain cannot plant a session.
+- The 8-hour limit, logout revocation and database account checks work the same in every environment.
+
+### HTTP security headers
+
+| Header | Value | Purpose |
+|---|---|---|
+| `Content-Security-Policy` | See below | Limits what the browser may load or run |
+| `X-Content-Type-Options` | `nosniff` | Stops browsers guessing file types |
+| `X-Frame-Options` | `DENY` | Blocks clickjacking in older browsers |
+| `Referrer-Policy` | `same-origin` | Keeps URLs private from other sites while allowing the HTTPS CSRF check |
+| `Permissions-Policy` | Camera, location, microphone, payment and USB off | Disables browser features the app never uses |
+| `Cross-Origin-Opener-Policy` | `same-origin` | Isolates the page from windows opened by other sites |
+| `Cross-Origin-Resource-Policy` | `same-origin` | Stops other sites embedding responses |
+| `Cache-Control` | `no-store` on all non-static responses | Keeps tickets and CSRF tokens out of caches |
+| `Strict-Transport-Security` | `max-age=31536000` | Production HTTPS only. Subdomains and preload are left out because they are hard to undo |
+
+### Content Security Policy
+
+The policy starts from `default-src 'none'` and allows only what the pages use. It contains no `unsafe-inline`, `unsafe-eval` or wildcards, so inline styles and event handlers were moved to `static/style.css` and `static/app.js`.
+
+Documented exceptions:
+
+- **Three exact CDN files and the icon font folder.** Bootstrap and Bootstrap Icons load from cdnjs. Whole-CDN access is avoided because cdnjs hosts old libraries an attacker could abuse, and each file also has a Subresource Integrity hash.
+- **`img-src data:`.** Bootstrap's CSS draws its menu, close and select icons as `data:` SVG images. Images cannot run script here.
+
+### Input limits
+
+| Input | Limit | When exceeded |
+|---|---|---|
+| Whole request body | 1 MiB | 413 |
+| Multipart form parts | 50 | 413 |
+| Ticket title | 200 characters, single line | 400, form returned with your text |
+| Ticket description | 10,000 characters | 400, form returned with your text |
+| Comment | 10,000 characters | 400, page returned with your text |
+| Assignee | 150 characters, single line | 400 |
+| Login username / password | 150 / 1,024 characters | Normal "invalid" message, without hashing |
+
+Text is **never silently shortened**. Limits count Unicode characters, so an emoji is one character on the server. Browsers count an emoji as two for `maxlength`, so the form can stop slightly earlier than the server would. Windows line endings count as one character, and control characters are rejected.
+
+### Reverse proxy and forwarded headers
+
+Any client can send `X-Forwarded-For: 1.2.3.4`. If the app believed it, an attacker could change "address" on each attempt and avoid the login rate limit. So:
+
+- `X-Forwarded-For` and `X-Forwarded-Proto` are used **only** when the TCP connection comes from `TRUSTED_PROXY_IPS`. Otherwise they are deleted.
+- `TRUSTED_PROXY_COUNT` selects the value written by your proxy, counting from the right. Values further left may be client-supplied.
+- `X-Forwarded-Host`, `-Port`, `-Prefix` and `Forwarded` are always deleted. The proxy must pass the original `Host` header, which `TRUSTED_HOSTS` checks.
+
+An example Caddy site on the same machine:
+
+```caddyfile
+helpdesk.example.org {
+    reverse_proxy 127.0.0.1:8000
+}
+```
+
+```bash
+APP_ENV=production
+TRUSTED_HOSTS=helpdesk.example.org
+TRUSTED_PROXY_COUNT=1
+TRUSTED_PROXY_IPS=127.0.0.1
+```
+
+### HTTPS deployment requirements
+
+Before any real deployment:
+
+1. Terminate HTTPS at a reverse proxy and redirect HTTP to HTTPS.
+2. **Bind the app to a private address** such as `127.0.0.1:8000`, and firewall it so only the proxy can connect. With a loopback proxy address, every local process is trusted as a proxy.
+3. Use a production WSGI server. None is included yet.
+4. Run **one worker process**, or move rate limiting to shared storage such as Redis, because the current counters are per process.
+5. Back up the database and run `flask --app app db-status` before starting.
+6. Change any old demonstration passwords.
+
+### Security testing
+
+```bash
+python -m unittest tests.test_production_config tests.test_security_headers_cookies tests.test_input_limits tests.test_proxy_trust -v
+python -m pip_audit --strict -r requirements.txt
+```
+
+These tests load a private copy of the application for each environment and use temporary databases only.
+
+### Remaining limitations
+
+- Not deployed or tested behind a live Caddy instance or production WSGI server.
+- Login response time can reveal whether a username exists, because unknown users skip password hashing.
+- Rate limits are in memory, so they reset on restart and are not shared between workers.
+- `APP_ENV` defaults to development. A server started without it accepts only localhost hostnames, but it does not enforce HTTPS.
+- `flask run` cannot be blocked in production by the app itself, so the deployment must use a WSGI server.
+- Assignees are length-checked but not yet required to be existing accounts.
+- Bidirectional text control characters are allowed, so ticket text can display in a misleading order.
+- Pages depend on the cdnjs CDN. Integrity hashes stop altered files, but an outage would remove styling.
+- SQLite suits a small, single-server deployment only.
+
+---
+
 ## Automated Testing
 
-The project includes 615 automated tests using Python's built-in `unittest` framework.
+The project includes 754 automated tests using Python's built-in `unittest` framework.
 
 To run the full suite:
 
@@ -714,6 +860,10 @@ python -m unittest tests.test_search_route -v
 | `test_migrations.py` | 33 | Versioning, ordering, repeatability, rollback, validation, foreign keys, triggers, concurrency, backups, retired script |
 | `test_migration_upgrades.py` | 23 | Synthetic copies of every historical schema upgraded with data preserved, and the app running on them |
 | `test_migration_cli.py` | 24 | `init-db` and `db-status` output and exit codes, startup check, 503 readiness response, account setup guard |
+| `test_production_config.py` | 32 | Unsafe secrets, debug restrictions, startup refusal, host and proxy settings |
+| `test_security_headers_cookies.py` | 37 | Cookies, revocation, expiry, CSRF, headers, CSP, template compatibility and main workflows in production |
+| `test_input_limits.py` | 47 | Body, field, Unicode, login, assignee and ticket-number limits |
+| `test_proxy_trust.py` | 23 | Forwarded-header trust, rate-limit spoofing, HTTPS detection and Host validation |
 
 Tests never touch the real `helpdesk.db`:
 
@@ -727,7 +877,7 @@ Coverage is still not exhaustive. Concurrent migration attempts are tested, but 
 
 ## Security Limitations
 
-**This project is intended for local development and educational use. It is not production-ready.**
+**This project is intended for local development and educational use. It has production security settings but has not been deployed.** See [Production Security Configuration](#production-security-configuration).
 
 | Security area | Current status |
 |---|---|
@@ -746,12 +896,18 @@ Coverage is still not exhaustive. Concurrent migration attempts are tested, but 
 | Search ownership restrictions | Implemented and tested |
 | Pagination ownership restrictions | Applied before paging; counts and pages tested |
 | SLA dashboard restrictions | SLA counts, rows and filters use the same ownership rule; tested |
-| HTTPS | Not configured |
-| Debug mode | Disabled (`debug=False`) |
+| HTTPS | Required by production mode; must be provided by a reverse proxy, which is not yet deployed |
+| Debug mode | Disabled, and production startup is refused if it is requested |
+| Secret key validation | Unsafe or missing production keys stop startup |
+| Secure cookies | HttpOnly and SameSite everywhere; Secure and `__Host-` in production |
+| Security headers and CSP | Implemented with no `unsafe-inline` or `unsafe-eval` |
+| Request and field limits | Enforced on the server |
+| Reverse-proxy trust | Forwarded headers accepted only from configured proxies |
+| Host validation | Implemented with `TRUSTED_HOSTS` |
 | Web-based account administration | Not implemented |
-| Automated security testing | 615 tests covering auth, CSRF, ownership, search, pagination, export, history, SLA and migrations |
+| Automated security testing | 754 tests covering auth, CSRF, ownership, search, pagination, export, history, SLA, migrations and production security |
 
-**Session limits:** a stolen cookie remains usable until the user logs out, changes their password, is deactivated, or the 8-hour limit passes. Logout cannot target a single device. A request already being processed when a session is revoked may finish. Because HTTPS is not configured, cookies can still be intercepted on an untrusted network.
+**Session limits:** a stolen cookie remains usable until the user logs out, changes their password, is deactivated, or the 8-hour limit passes. Logout cannot target a single device. A request already being processed when a session is revoked may finish. Local development uses plain HTTP, so it must not be exposed to an untrusted network.
 
 Existing databases may still contain old demonstration credentials. Those passwords must be changed before relying on the updated authentication process.
 
@@ -768,7 +924,7 @@ Security improvements are ongoing.
 - No administrative user management interface
 - No end-to-end browser testing
 - No load or concurrency testing
-- Not configured for production deployment
+- Not deployed; production mode still needs a reverse proxy and WSGI server
 - No "down" migrations; recovery from a bad upgrade means restoring a backup
 - On databases first upgraded by the retired `migrate.py`, `tickets.updated_at` has no default, so new tickets show "Not recorded" until they are first updated. Fixing the default would require rebuilding the table.
 
@@ -792,6 +948,8 @@ Security improvements are ongoing.
 - [x] Disable debug mode for deployment
 - [ ] Add a secure web-based change-password feature
 - [ ] Add administrator-controlled user creation
+- [x] Add production security configuration, secure cookies and security headers
+- [x] Enforce server-side request and field limits
 - [ ] Configure HTTPS for production
 
 ### Application Features
@@ -807,7 +965,7 @@ Security improvements are ongoing.
 
 ### Deployment
 
-- [ ] Prepare production configuration
+- [x] Prepare production configuration
 - [ ] Configure Gunicorn
 - [ ] Configure Nginx and HTTPS
 - [ ] Perform security review

@@ -48,7 +48,8 @@
               id="title"
               name="title"
               placeholder="e.g. Printer in Room 3 is not responding"
-              maxlength="120"
+              maxlength="{{ max_title_length }}"
+              value="{{ draft_title }}"
               required
             >
 
@@ -71,8 +72,9 @@
               name="description"
               rows="5"
               placeholder="Describe the problem in detail:&#10;- What happened?&#10;- What did you try?&#10;- When did it start?"
+              maxlength="{{ max_description_length }}"
               required
-            ></textarea>
+            >{{ draft_description }}</textarea>
 
           </div>
 
@@ -102,7 +104,7 @@
                     name="priority"
                     id="p_{{ p }}"
                     value="{{ p }}"
-                    {% if p == 'Medium' %}checked{% endif %}
+                    {% if p == draft_priority %}checked{% endif %}
                   >
 
                   <label class="form-check-label" for="p_{{ p }}">

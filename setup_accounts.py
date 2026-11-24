@@ -15,6 +15,7 @@ import sys
 
 import database as db
 import migrations
+import validation
 
 
 def setup_account():
@@ -99,6 +100,14 @@ def setup_account():
         # Require a strong password
         if len(new_password) < 16:
             print("Password must contain at least 16 characters.")
+            return
+
+        # Longer passwords would be refused at the login page
+        if len(new_password) > validation.MAX_PASSWORD_LENGTH:
+            print(
+                "Password must contain at most "
+                f"{validation.MAX_PASSWORD_LENGTH} characters."
+            )
             return
 
         # Check that both passwords match
