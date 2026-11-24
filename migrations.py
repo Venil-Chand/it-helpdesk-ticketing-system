@@ -457,6 +457,62 @@ def _migration_7_stable_usernames(conn):
 
 
 # ---------------------------------------------------
+# MIGRATION 8: ADMINISTRATIVE AUDIT EVENTS
+# ---------------------------------------------------
+
+def _migration_8_audit_events(conn):
+    """
+    Append-only record of account administration.
+
+    Each row says who did what to which account and when: accounts
+    created, roles changed, accounts deactivated or reactivated, and
+    passwords reset or changed. Passwords and hashes are never stored.
+
+    Accounts are referred to by id and by username. Usernames are
+    permanent (migration 7), and there is deliberately no foreign key to
+    users, so an event outlives the account it describes. No events are
+    generated for changes made before this migration: there is no record
+    of them. Existing rows in every other table are untouched.
+    """
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS audit_events (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            actor_user_id   INTEGER,
+            actor           TEXT NOT NULL CHECK (length(actor) > 0),
+            action          TEXT NOT NULL CHECK (length(action) > 0),
+            target_user_id  INTEGER,
+            target_username TEXT,
+            old_value       TEXT,
+            new_value       TEXT
+        )
+    """)
+
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_audit_events_date
+        ON audit_events (created_at DESC, id DESC)
+    """)
+
+    # The database itself refuses edits and deletions of audit events
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS audit_events_no_update
+        BEFORE UPDATE ON audit_events
+        BEGIN
+            SELECT RAISE(ABORT, 'audit events are append-only');
+        END
+    """)
+
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
+        BEFORE DELETE ON audit_events
+        BEGIN
+            SELECT RAISE(ABORT, 'audit events are append-only');
+        END
+    """)
+
+
+# ---------------------------------------------------
 # MIGRATION REGISTRY
 # ---------------------------------------------------
 
@@ -474,6 +530,8 @@ MIGRATIONS = (
     Migration(6, "Add session revocation", _migration_6_session_version),
     Migration(7, "Keep usernames stable and stop their reuse",
               _migration_7_stable_usernames),
+    Migration(8, "Add append-only administrative audit events",
+              _migration_8_audit_events),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1].version
@@ -523,6 +581,11 @@ _REQUIRED_COLUMNS = {
         "ticket_id": False, "response_due_at": True,
         "first_response_at": False, "policy_version": True,
     },
+    "audit_events": {
+        "id": False, "created_at": True, "actor_user_id": False,
+        "actor": True, "action": True, "target_user_id": False,
+        "target_username": False, "old_value": False, "new_value": False,
+    },
 }
 
 _PRIMARY_KEYS = {
@@ -531,6 +594,7 @@ _PRIMARY_KEYS = {
     "comments": "id",
     "ticket_history": "id",
     "ticket_sla": "ticket_id",
+    "audit_events": "id",
 }
 
 # (child table, child column) -> parent table, parent column
@@ -553,6 +617,9 @@ _INDEXES = {
         "ticket_history", [("ticket_id", False), ("created_at", True),
                            ("id", True)]
     ),
+    "idx_audit_events_date": (
+        "audit_events", [("created_at", True), ("id", True)]
+    ),
 }
 
 # Text the session revocation trigger must contain, after normalising
@@ -570,6 +637,8 @@ _TRIGGERS = {
     "ticket_history_no_delete": "BEFORE DELETE ON TICKET_HISTORY",
     "users_username_immutable": "BEFORE UPDATE OF USERNAME ON USERS",
     "users_no_historical_username_reuse": "BEFORE INSERT ON USERS",
+    "audit_events_no_update": "BEFORE UPDATE ON AUDIT_EVENTS",
+    "audit_events_no_delete": "BEFORE DELETE ON AUDIT_EVENTS",
 }
 
 # Text each username trigger must also contain, after normalising, so a

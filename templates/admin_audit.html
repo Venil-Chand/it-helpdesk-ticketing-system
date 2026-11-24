@@ -1,0 +1,67 @@
+{% extends 'base.html' %}
+{% block title %}Audit log — IT Helpdesk{% endblock %}
+
+{% set labels = {
+  'account_created': 'Account created',
+  'role_changed': 'Role changed',
+  'account_deactivated': 'Account deactivated',
+  'account_reactivated': 'Account reactivated',
+  'password_reset': 'Password reset by administrator',
+  'password_changed': 'Password changed by owner',
+} %}
+
+{% block content %}
+
+<div class="d-flex align-items-center mb-3">
+  <a href="{{ url_for('admin.users') }}" class="btn btn-outline-secondary btn-sm me-3">
+    <i class="bi bi-arrow-left"></i>
+  </a>
+  <h4 class="mb-0 fw-bold">
+    <i class="bi bi-journal-text me-1"></i>
+    Audit log
+  </h4>
+</div>
+
+<p class="text-muted small">
+  The {{ max_events }} most recent account administration events, newest
+  first. Events cannot be edited or deleted. Passwords are never recorded.
+</p>
+
+<div class="card shadow-sm border-0">
+  <div class="table-responsive">
+    <table class="table align-middle mb-0" id="audit-table">
+      <thead class="table-light">
+        <tr>
+          <th scope="col">When</th>
+          <th scope="col">Who</th>
+          <th scope="col">Action</th>
+          <th scope="col">Account</th>
+          <th scope="col">Change</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for event in events %}
+        <tr>
+          <td class="text-nowrap">{{ event['created_at'] | utc_time }}</td>
+          <td>{{ event['actor'] }}</td>
+          <td>{{ labels.get(event['action'], event['action']) }}</td>
+          <td>{{ event['target_username'] or '' }}</td>
+          <td>
+            {% if event['old_value'] or event['new_value'] %}
+              {{ event['old_value'] or '' }}
+              {% if event['old_value'] %}&rarr;{% endif %}
+              {{ event['new_value'] or '' }}
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="5" class="text-center text-muted py-4">No audit events yet.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% endblock %}

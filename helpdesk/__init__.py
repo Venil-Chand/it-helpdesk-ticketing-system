@@ -17,6 +17,8 @@ Package layout:
     dashboard.py       blueprint "dashboard": ticket list and SLA monitoring
     tickets.py         blueprint "tickets": create, view, update, comment
     reports.py         blueprint "reports": CSV export
+    account.py         blueprint "account": change your own password
+    admin.py           blueprint "admin": account administration, audit log
     ticket_filters.py  filters and values shared by several blueprints
     cli.py             flask db-status / init-db / assignment-audit
     clock.py           the single clock every route reads
@@ -31,7 +33,7 @@ from flask import Flask
 import security_config
 from sla_storage import parse_stored_utc
 
-from . import auth, dashboard, reports, tickets
+from . import account, admin, auth, dashboard, reports, tickets
 from .cli import register_commands
 from .errors import register_error_handlers
 from .security import apply_route_limits, register_security
@@ -45,6 +47,8 @@ BLUEPRINTS = (
     dashboard.bp,
     tickets.bp,
     reports.bp,
+    account.bp,
+    admin.bp,
 )
 
 

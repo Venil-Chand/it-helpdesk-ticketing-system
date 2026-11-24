@@ -606,8 +606,9 @@ class TestEveryRouteIsProtected(AuthTestCase):
             if rule.endpoint in self.PUBLIC_ENDPOINTS:
                 continue
 
-            url = rule.rule.replace("<int:ticket_id>",
-                                    str(self.alice_ticket))
+            url = rule.rule.replace(
+                "<int:ticket_id>", str(self.alice_ticket)
+            ).replace("<int:user_id>", str(self.ids["alice"]))
 
             for method in rule.methods - {"HEAD", "OPTIONS"}:
                 with self.subTest(endpoint=rule.endpoint, method=method):
@@ -730,7 +731,7 @@ class TestActivationMigration(unittest.TestCase):
 
         result = migrations.migrate(self.path)
 
-        self.assertEqual([m.version for m in result.applied], [5, 6, 7])
+        self.assertEqual([m.version for m in result.applied], [5, 6, 7, 8])
         self.assertEqual(self.version(), SCHEMA_VERSION)
         self.assertTrue(migrations.schema_status(self.path).is_current)
 
@@ -811,7 +812,7 @@ class TestActivationMigration(unittest.TestCase):
         status = migrations.schema_status(self.path)
 
         self.assertEqual(status.state, "outdated")
-        self.assertEqual([m.version for m in status.pending], [5, 6, 7])
+        self.assertEqual([m.version for m in status.pending], [5, 6, 7, 8])
 
     def test_upgraded_account_can_authenticate(self):
         migrations.migrate(self.path)

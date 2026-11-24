@@ -14,9 +14,14 @@ from werkzeug.security import (
 import sqlite3
 import sys
 
+import accounts
 import database as db
 import migrations
 import validation
+
+
+# Recorded as the actor of audit events, since no web account is signed in
+AUDIT_ACTOR = "setup_accounts.py"
 
 
 def setup_account():
@@ -99,8 +104,11 @@ def setup_account():
         confirm_password = getpass("Confirm new password: ")
 
         # Require a strong password
-        if len(new_password) < 16:
-            print("Password must contain at least 16 characters.")
+        if len(new_password) < validation.MIN_PASSWORD_LENGTH:
+            print(
+                "Password must contain at least "
+                f"{validation.MIN_PASSWORD_LENGTH} characters."
+            )
             return
 
         # Longer passwords would be refused at the login page
@@ -137,7 +145,7 @@ def setup_account():
             # refuses a name that existing ticket records still use, so a
             # new person never inherits a deleted account's tickets.
             try:
-                conn.execute(
+                cursor = conn.execute(
                     """
                     INSERT INTO users (username, password_hash, role)
                     VALUES (?, ?, ?)
@@ -154,6 +162,15 @@ def setup_account():
                 )
                 return False
 
+            accounts.record_audit_event(
+                conn,
+                actor=AUDIT_ACTOR,
+                action=accounts.ACCOUNT_CREATED,
+                target_user_id=cursor.lastrowid,
+                target_username=username,
+                new_value="admin"
+            )
+
             print("Administrator account created successfully.")
 
         else:
@@ -165,6 +182,14 @@ def setup_account():
                 WHERE id = ?
                 """,
                 (password_hash, user["id"])
+            )
+
+            accounts.record_audit_event(
+                conn,
+                actor=AUDIT_ACTOR,
+                action=accounts.PASSWORD_CHANGED,
+                target_user_id=user["id"],
+                target_username=user["username"]
             )
 
             # The users_revoke_sessions trigger ends existing logins as

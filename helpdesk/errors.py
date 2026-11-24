@@ -51,6 +51,15 @@ def bad_request(error):
     )
 
 
+def forbidden(error):
+    """Refuse a signed-in user who lacks the role a page needs."""
+
+    return plain_error(
+        "You do not have permission to use this page.\n",
+        403
+    )
+
+
 def request_too_large(error):
     """Refuse a request body above the configured limit."""
 
@@ -131,5 +140,6 @@ def register_error_handlers(app):
     """Attach the shared error handlers to one application."""
 
     app.register_error_handler(400, bad_request)
+    app.register_error_handler(403, forbidden)
     app.register_error_handler(413, request_too_large)
     app.register_error_handler(sqlite3.OperationalError, database_not_ready)

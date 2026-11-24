@@ -1,0 +1,70 @@
+{% extends 'base.html' %}
+{% block title %}New account — IT Helpdesk{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-12 col-md-8 col-lg-6">
+
+    <div class="d-flex align-items-center mb-3">
+      <a href="{{ url_for('admin.users') }}" class="btn btn-outline-secondary btn-sm me-3">
+        <i class="bi bi-arrow-left"></i>
+      </a>
+      <h4 class="mb-0 fw-bold">New account</h4>
+    </div>
+
+    <div class="card shadow-sm border-0">
+      <div class="card-body">
+        <form method="POST" action="{{ url_for('admin.new_user') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+          <div class="mb-3">
+            <label for="username" class="form-label fw-semibold">Username</label>
+            <input type="text" class="form-control" id="username" name="username"
+                   value="{{ draft_username }}" autocomplete="off"
+                   minlength="3" maxlength="64" required autofocus>
+            <div class="form-text">
+              3 to 64 letters, digits, ".", "_" or "-". Usernames are permanent
+              and cannot be changed later.
+            </div>
+          </div>
+
+          <div class="mb-3">
+            <label for="role" class="form-label fw-semibold">Role</label>
+            <select class="form-select" id="role" name="role">
+              {% for role in roles %}
+              <option value="{{ role }}" {% if role == draft_role %}selected{% endif %}>{{ role }}</option>
+              {% endfor %}
+            </select>
+            <div class="form-text">
+              user: raises and follows their own tickets.
+              technician: sees and works on every ticket.
+              admin: technician access plus account administration.
+            </div>
+          </div>
+
+          <div class="mb-3">
+            <label for="password" class="form-label fw-semibold">Initial password</label>
+            <input type="password" class="form-control" id="password" name="password"
+                   autocomplete="new-password"
+                   minlength="{{ min_password_length }}" maxlength="{{ max_password_length }}" required>
+            <div class="form-text">At least {{ min_password_length }} characters.</div>
+          </div>
+
+          <div class="mb-4">
+            <label for="confirm_password" class="form-label fw-semibold">Confirm password</label>
+            <input type="password" class="form-control" id="confirm_password" name="confirm_password"
+                   autocomplete="new-password"
+                   minlength="{{ min_password_length }}" maxlength="{{ max_password_length }}" required>
+          </div>
+
+          <button type="submit" class="btn btn-primary w-100">
+            <i class="bi bi-person-plus me-1"></i>
+            Create account
+          </button>
+        </form>
+      </div>
+    </div>
+
+  </div>
+</div>
+{% endblock %}

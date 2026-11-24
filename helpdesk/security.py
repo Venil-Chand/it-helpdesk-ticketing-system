@@ -33,6 +33,15 @@ LIMITER_KEY = "helpdesk.limiter"
 # The login form accepts this many attempts per client address
 LOGIN_RATE_LIMIT = "5 per minute"
 
+# Password changes check the current password, so they get the same limit
+PASSWORD_CHANGE_RATE_LIMIT = "5 per minute"
+
+# endpoint -> limit on its POST requests, per client address
+ROUTE_LIMITS = {
+    "auth.login": LOGIN_RATE_LIMIT,
+    "account.change_password": PASSWORD_CHANGE_RATE_LIMIT,
+}
+
 
 def get_settings(app):
     """The validated SecuritySettings this application was created with."""
@@ -112,9 +121,9 @@ def apply_route_limits(app):
     application's limits on its own Limiter.
     """
 
-    endpoint = "auth.login"
     limiter = get_limiter(app)
 
-    app.view_functions[endpoint] = limiter.limit(
-        LOGIN_RATE_LIMIT, methods=["POST"]
-    )(app.view_functions[endpoint])
+    for endpoint, limit in ROUTE_LIMITS.items():
+        app.view_functions[endpoint] = limiter.limit(
+            limit, methods=["POST"]
+        )(app.view_functions[endpoint])

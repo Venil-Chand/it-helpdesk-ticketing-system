@@ -675,7 +675,7 @@ class TestStableUsernameMigration(unittest.TestCase):
 
         result = migrations.migrate(self.path)
 
-        self.assertEqual([m.version for m in result.applied], [7])
+        self.assertEqual([m.version for m in result.applied], [7, 8])
         for table, before in data.items():
             with self.subTest(table=table):
                 self.assertEqual(
