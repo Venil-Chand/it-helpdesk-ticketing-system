@@ -46,9 +46,11 @@ The project demonstrates Python programming, web development, relational databas
 - **Ticket management** — update status and assign tickets, only ever to active technicians or administrators (checked on the server)
 - **Comments** — add notes to existing tickets
 - **Account setup** — create the first administrator using a terminal script
-- **Password changes** — verify the current password before changing it
+- **Web account administration** — administrators create accounts, change roles, deactivate and reactivate accounts and reset passwords in the browser; accounts are never deleted
+- **Self-service password change** — every user can change their own password after entering the current one; other sessions end
+- **Administrative audit log** — an append-only record of every account change, who made it and when, with no passwords recorded
 - **Versioned database migrations** — explicit `flask --app app init-db` and read-only `db-status` commands; upgrades run in one transaction and never seed accounts
-- **Automated tests** — 899 tests covering the application factory, authentication, authorization, CSRF, search, pagination, CSV export, history, assignment rules, SLA policy and monitoring, and database migrations
+- **Automated tests** — 957 tests covering the application factory, authentication, authorization, CSRF, account administration, password changes, audit events, search, pagination, CSV export, history, assignment rules, SLA policy and monitoring, and database migrations
 
 ---
 
@@ -56,7 +58,7 @@ The project demonstrates Python programming, web development, relational databas
 
 | Role | Permissions |
 |---|---|
-| Administrator | Manage support tickets and assignments |
+| Administrator | Everything a technician can do, plus account administration and the audit log |
 | Technician | Update ticket status, manage assignments and add comments |
 | Regular User | Create tickets, view permitted pages and add comments |
 
@@ -184,13 +186,55 @@ The script checks the current password before updating the stored password hash.
 - Werkzeug hashes passwords before they are stored in SQLite.
 - The new password cannot match the existing password.
 - SQL queries use parameter placeholders to reduce SQL injection risk.
-- Password-changing functionality is available through the local command line, not through the web interface.
+- Passwords can also be changed in the browser (**Password** in the navigation bar) and reset by an administrator; see [Web Account Administration](#web-account-administration).
 
 **Important:** Existing demonstration accounts from earlier project versions may still have their original passwords until they are changed. Removing the hardcoded passwords from source code does not automatically invalidate passwords stored in an existing database.
 
-This local script is not a replacement for production-grade account administration.
+Use this script for the first administrator; manage every other account from the **Users** page.
 
 `setup_accounts.py` requires an up-to-date database schema. Run `flask --app app init-db` first; the script no longer creates tables.
+
+---
+
+## Web Account Administration
+
+Administrators manage accounts at **Users** (`/admin/users`) in the navigation bar. Nobody else can open these pages: technicians and users get **403 Forbidden**, and signed-out visitors are sent to the login page.
+
+| Task | How | Effect on sessions |
+|---|---|---|
+| Create an account | **New account**: username, role and an initial password (at least 16 characters, typed twice) | — |
+| Change a role | Choose the role in the account's row and press **Save** | Applies on the account's next request |
+| Deactivate an account | **Deactivate** (asks for confirmation) | Signs the account out everywhere at once |
+| Reactivate an account | **Reactivate** | Old sessions stay invalid; the user signs in again |
+| Reset a forgotten password | **Reset password**, enter the new password twice | Signs the account out everywhere at once |
+| Review changes | **Audit log** (`/admin/audit`): the 200 most recent events | — |
+
+Every user can change their own password at **Password** (`/account/password`). The current password is required, the form is limited to 5 attempts per minute, and every other session for the account ends. The browser that made the change stays signed in.
+
+### Rules enforced on the server
+
+The rules live in `accounts.py` and are checked inside the same database transaction as the change. They hold whatever the form sends.
+
+- The acting account is re-read inside the transaction and must still be an **active administrator**. An administrator demoted or deactivated a moment earlier changes nothing.
+- Administrators **cannot change their own role, deactivate themselves or reset their own password** from the Users page; they use **Password** instead. Because the actor must be an active administrator and cannot act on itself, **the last active administrator can never be removed** through the application.
+- **Accounts are never deleted.** Deactivation keeps every ticket, comment and history entry unchanged.
+- **New usernames** must be 3 to 64 letters, digits, `.`, `_` or `-`, starting with a letter or digit. A name differing only in letter case from an existing account (`Admin` and `admin`) is refused, and so is a name that ticket records still use (migration 7). Existing usernames are unaffected.
+- Demoting or deactivating a technician **does not unassign their tickets**: history is not rewritten. The page says how many open or in-progress tickets still need reassigning, and the ticket page flags each one as before.
+- Passwords are hashed with Werkzeug before storage and are **never written to the audit log**.
+
+### Audit events
+
+`audit_events` (migration 8) records `account_created`, `role_changed`, `account_deactivated`, `account_reactivated`, `password_reset` and `password_changed`, with the actor, the target account (id and username), the old and new value where relevant, and the time in UTC. Database triggers refuse any `UPDATE` or `DELETE` of an event. Changes made by `setup_accounts.py` are recorded with the actor `setup_accounts.py`. Changes made directly with SQL outside the application are not recorded.
+
+### Account policy decisions still open
+
+These need a decision from the service owner. Until then, the behaviour above applies.
+
+1. **Forced password change.** Should a password set by an administrator (new account or reset) have to be changed at first sign-in? Not enforced today.
+2. **Password composition and expiry.** Only a 16-character minimum is enforced. Breached-password checks, complexity rules or expiry are not.
+3. **Sign-in events.** Successful and failed logins are not written to the audit log.
+4. **Audit retention.** Events are kept forever; there is no export or archiving.
+5. **Multi-factor authentication** is not available.
 
 ---
 
@@ -209,7 +253,8 @@ The database structure is defined in `migrations.py` as a numbered list of **mig
 | 4 | Response SLA | `ticket_sla` |
 | 5 | Account activation | `users.is_active`; existing accounts stay active |
 | 6 | Session revocation | `users.session_version` and the `users_revoke_sessions` trigger |
-| 7 | Stable usernames | `users_username_immutable` and `users_no_historical_username_reuse` triggers; no rows changed (current version) |
+| 7 | Stable usernames | `users_username_immutable` and `users_no_historical_username_reuse` triggers; no rows changed |
+| 8 | Audit events | Append-only `audit_events`, its index and its two protective triggers; no existing rows changed and no events invented for past changes (current version) |
 
 The version is stored inside the database file itself, using SQLite's built-in `PRAGMA user_version` header field. No extra table is needed.
 
@@ -358,15 +403,18 @@ it-helpdesk-ticketing-system/
 ├── helpdesk/                    (the web application package)
 │   ├── __init__.py              (create_app(): the application factory)
 │   ├── security.py              (HTTPS, CSRF, rate limit, proxy, headers)
-│   ├── errors.py                (plain-text 400/413 and 503 responses)
+│   ├── errors.py                (plain-text 400/403/413 and 503 responses)
 │   ├── auth.py                  (blueprint "auth": login, logout, sessions)
 │   ├── dashboard.py             (blueprint "dashboard": ticket list, SLA cards)
 │   ├── tickets.py               (blueprint "tickets": create, view, update)
 │   ├── reports.py               (blueprint "reports": CSV export)
+│   ├── account.py               (blueprint "account": change your password)
+│   ├── admin.py                 (blueprint "admin": accounts, audit log)
 │   ├── ticket_filters.py        (filters shared by dashboard and export)
 │   ├── cli.py                   (db-status, init-db, assignment-audit)
 │   └── clock.py                 (the one clock every route reads)
 ├── database.py
+├── accounts.py                  (account administration rules and audit events)
 ├── sla.py
 ├── sla_storage.py
 ├── csv_export.py
@@ -381,6 +429,10 @@ it-helpdesk-ticketing-system/
 ├── README.md
 ├── tests/
 │   ├── test_account_setup.py
+│   ├── test_account_administration.py
+│   ├── test_password_change.py
+│   ├── test_audit_migration.py
+│   ├── account_helpers.py       (shared fixture for account tests)
 │   ├── test_assignment_validation.py
 │   ├── test_authentication.py
 │   ├── test_authorization.py
@@ -412,6 +464,10 @@ it-helpdesk-ticketing-system/
 │   └── test_ticket_search.py
 ├── templates/
 │   ├── base.html
+│   ├── admin_users.html
+│   ├── admin_user_new.html
+│   ├── admin_audit.html
+│   ├── change_password.html
 │   ├── login.html
 │   ├── index.html
 │   ├── new_ticket.html
@@ -431,12 +487,13 @@ it-helpdesk-ticketing-system/
 | `sla.py` | Response SLA policy: deadlines per priority and status rules |
 | `sla_storage.py` | Stores SLA deadlines and first responses; reads stored UTC timestamps |
 | `csv_export.py` | Builds safe CSV files from ticket rows |
-| `setup_accounts.py` | Initial administrator setup and password changes |
+| `setup_accounts.py` | Initial administrator setup and password changes from the terminal |
+| `accounts.py` | Account administration rules, password changes and the audit log, used by the admin and account blueprints |
 | `migrations.py` | Versioned, transaction-safe schema migrations (replaces the retired `migrate.py`) |
 | `security_config.py` | Validates environment settings and defines cookies, headers and the CSP |
 | `validation.py` | Server-side text and request size limits |
 | `proxy_trust.py` | Believes forwarded headers only from configured proxies |
-| `tests/` | 899 automated tests covering the application factory, auth, CSRF, ownership, search, pagination, CSV export, history, assignment, SLA, migrations and production security |
+| `tests/` | 957 automated tests covering the application factory, auth, CSRF, ownership, search, pagination, CSV export, history, assignment, SLA, migrations and production security |
 
 The local `helpdesk.db` database and `.env` file are excluded from version control.
 
@@ -676,7 +733,7 @@ Werkzeug converts passwords into one-way hashes. When a user logs in, the submit
 
 ### Account Management
 
-The `setup_accounts.py` script uses `getpass`, password verification and SQL updates to manage local account passwords without writing new passwords directly into source code.
+Administrators manage accounts in the browser (see [Web Account Administration](#web-account-administration)). The `setup_accounts.py` script remains for creating the first administrator and for terminal password changes; it uses `getpass` so passwords never appear in source code or shell history.
 
 ---
 
@@ -1096,7 +1153,7 @@ These tests build a separate application for each environment and use temporary 
 
 ## Automated Testing
 
-The project includes 899 automated tests using Python's built-in `unittest` framework. CI runs them on Python 3.13.
+The project includes 957 automated tests using Python's built-in `unittest` framework. CI runs them on Python 3.13.
 
 To run the full suite:
 
@@ -1116,6 +1173,9 @@ python -m unittest tests.test_search_route -v
 |---|---|---|
 | `test_authentication.py` | 4 | Protected pages redirect anonymous visitors |
 | `test_account_setup.py` | 3 | Password hashing and password change rules |
+| `test_account_administration.py` | 36 | Admin-only access (403 for other roles, nothing changed), CSRF, creating accounts and every refused input, role changes, deactivation and reactivation ending sessions, password resets, self-protection, actor re-checked in the transaction, rollback, audit events and the audit page |
+| `test_password_change.py` | 14 | Current password required, this browser kept and other sessions ended, copied cookies refused, refused changes save nothing, concurrent changes detected, rate limit and CSRF |
+| `test_audit_migration.py` | 8 | Migration 8 keeps every row (including the historical invalid assignee), append-only triggers, schema check, `setup_accounts.py` audit events |
 | `test_authorization.py` | 3 | Only staff may update ticket status |
 | `test_session_revocation.py` | 106 | Copied-cookie replay, expiry, revocation, concurrency, legacy sessions, failures and migration 6 |
 | `test_database_authentication.py` | 80 | Real account checks: deleted, deactivated and demoted users, legacy sessions, ownership, migration 5, database failures, CSRF and rate limiting |
@@ -1191,10 +1251,12 @@ Coverage is still not exhaustive. Concurrent migration attempts are tested, but 
 | Request and field limits | Enforced on the server |
 | Reverse-proxy trust | Forwarded headers accepted only from configured proxies |
 | Host validation | Implemented with `TRUSTED_HOSTS` |
-| Web-based account administration | Not implemented |
+| Web-based account administration | Administrators only; rules re-checked in the database transaction; audited; tested |
+| Self-service password change | Current password required; rate limited; other sessions ended; tested |
+| Administrative audit log | Append-only (enforced by triggers); no passwords recorded |
 | Ticket assignment | Only active technicians and administrators; enforced in the database transaction; tested |
 | Username reuse | Usernames cannot be renamed or given to a new account while ticket records use them (migration 7) |
-| Automated security testing | 899 tests covering the application factory, auth, CSRF, ownership, search, pagination, export, history, assignment, SLA, migrations and production security |
+| Automated security testing | 957 tests covering account administration, password changes, audit events, the application factory, auth, CSRF, ownership, search, pagination, export, history, assignment, SLA, migrations and production security |
 
 **Session limits:** a stolen cookie remains usable until the user logs out, changes their password, is deactivated, or the 8-hour limit passes. Logout cannot target a single device. A request already being processed when a session is revoked may finish. Local development uses plain HTTP, so it must not be exposed to an untrusted network.
 
@@ -1209,8 +1271,6 @@ Security improvements are ongoing.
 - No email notifications
 - No automatic SLA alerts; overdue tickets are visible only on the dashboard
 - No file attachments
-- No web-based password change form
-- No administrative user management interface
 - No end-to-end browser testing
 - No load or concurrency testing
 - Not deployed; production mode still needs a reverse proxy and WSGI server
@@ -1235,8 +1295,9 @@ Security improvements are ongoing.
 - [x] Verify accounts, active status and roles against the database on every request
 - [x] Add session expiry and account-wide session revocation
 - [x] Disable debug mode for deployment
-- [ ] Add a secure web-based change-password feature
-- [ ] Add administrator-controlled user creation
+- [x] Add a secure web-based change-password feature
+- [x] Add administrator-controlled user creation
+- [x] Record account administration in an append-only audit log
 - [x] Add production security configuration, secure cookies and security headers
 - [x] Enforce server-side request and field limits
 - [ ] Configure HTTPS for production
@@ -1246,10 +1307,10 @@ Security improvements are ongoing.
 - [ ] Email notifications
 - [ ] File attachments
 - [x] Dashboard pagination
-- [ ] Ticket export to CSV
+- [x] Ticket export to CSV
 - [x] Ticket search by title and description
 - [ ] Advanced search (date ranges, assignee, multi-field)
-- [ ] Ticket activity history
+- [x] Ticket activity history
 - [ ] Additional dashboard reports
 
 ### Deployment
