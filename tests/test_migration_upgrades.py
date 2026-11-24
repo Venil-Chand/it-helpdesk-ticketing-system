@@ -28,6 +28,12 @@ import migrations
 from app import app, limiter
 from migrations import IncompatibleSchemaError, SCHEMA_VERSION
 
+# Schema objects created by migration 8
+AUDIT_OBJECTS = (
+    "audit_events", "idx_audit_events_date",
+    "audit_events_no_update", "audit_events_no_delete",
+)
+
 
 # Table definitions exactly as created by earlier versions of the code
 ORIGINAL_TICKETS_SQL = """
@@ -512,7 +518,8 @@ class TestUpgradeUnversionedCurrentSchema(UpgradeTestCase):
 
         self.assert_fully_migrated()
 
-        # Migrations 5, 6 and 7 change only users and add its triggers
+        # Migrations 5, 6 and 7 change only users and add its triggers;
+        # migration 8 only adds the audit_events table and its objects
         def without_users(objects):
             return [
                 item for item in objects
@@ -520,8 +527,14 @@ class TestUpgradeUnversionedCurrentSchema(UpgradeTestCase):
                     "users", "users_revoke_sessions",
                     "users_username_immutable",
                     "users_no_historical_username_reuse",
+                    *AUDIT_OBJECTS,
                 )
             ]
+
+        added = {item[1] for item in self.schema()} - {
+            item[1] for item in schema
+        }
+        self.assertLessEqual(set(AUDIT_OBJECTS), added)
 
         self.assertEqual(without_users(self.schema()), without_users(schema))
         self.assertEqual(
