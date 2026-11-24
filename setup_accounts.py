@@ -11,6 +11,7 @@ from werkzeug.security import (
     check_password_hash
 )
 
+import sqlite3
 import sys
 
 import database as db
@@ -132,14 +133,26 @@ def setup_account():
         # -------------------------------------------
 
         if user is None:
-            # Create the initial administrator account
-            conn.execute(
-                """
-                INSERT INTO users (username, password_hash, role)
-                VALUES (?, ?, ?)
-                """,
-                (username, password_hash, "admin")
-            )
+            # Create the initial administrator account. The database
+            # refuses a name that existing ticket records still use, so a
+            # new person never inherits a deleted account's tickets.
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO users (username, password_hash, role)
+                    VALUES (?, ?, ?)
+                    """,
+                    (username, password_hash, "admin")
+                )
+            except sqlite3.IntegrityError:
+                conn.rollback()
+                print(
+                    f"The username '{username}' belongs to a deleted "
+                    "account that existing tickets still refer to, so it "
+                    "cannot be given to a new account. No account was "
+                    "created."
+                )
+                return False
 
             print("Administrator account created successfully.")
 

@@ -821,9 +821,10 @@ def export_tickets():
 
     # All matching tickets, not one dashboard page. Ownership is part of
     # the SQL WHERE clause, so other users' tickets are never loaded.
-    # An ?sla= filter selects which tickets are exported, evaluated at
-    # `now`; the CSV columns stay exactly the same.
-    tickets = db.search_tickets(**filters, now=now)
+    # An ?sla= filter selects which tickets are exported, and each row's
+    # SLA columns come from the same SQL as the dashboard, both evaluated
+    # at `now`, so the file always matches what the dashboard showed.
+    tickets = db.search_tickets(**filters, include_sla=True, now=now)
 
     csv_text = build_tickets_csv(tickets)
 
@@ -971,13 +972,23 @@ def render_ticket_page(ticket, comment_draft="", status=200):
     history = db.get_ticket_history(ticket_id)
 
     # Response SLA, or None for tickets created before SLA tracking.
-    # Also loaded only after the access check.
-    sla = db.get_ticket_sla_status(ticket_id)
+    # Also loaded only after the access check. The time comes from the
+    # same clock the dashboard and CSV export use.
+    sla = db.get_ticket_sla_status(ticket_id, now=datetime.now(timezone.utc))
 
-    # Only support staff need the assignment list
+    # Only support staff need the assignment list: active technicians and
+    # admins only, so the form never offers an account that would be
+    # refused. If the current assignee no longer qualifies, the page says
+    # so and the form keeps that name selected, so saving a status change
+    # never unassigns the ticket by accident.
+    assignee_problem = None
+
     if is_tech_or_admin():
 
-        all_users = db.get_all_usernames()
+        all_users = db.get_assignable_users()
+
+        if ticket["assigned_to"]:
+            assignee_problem = db.get_assignee_problem(ticket["assigned_to"])
 
     else:
 
@@ -991,6 +1002,7 @@ def render_ticket_page(ticket, comment_draft="", status=200):
         sla=sla,
         statuses=STATUSES,
         all_users=all_users,
+        assignee_problem=assignee_problem,
         comment_draft=comment_draft,
         max_comment_length=validation.MAX_COMMENT_LENGTH
     ), status
@@ -1051,26 +1063,44 @@ def update_ticket(ticket_id):
 
         # Update the ticket and record each change in one transaction.
         # The actor is always the verified account, never a form value.
-        changes = db.update_ticket(
-            ticket_id,
-            status,
-            assigned_to,
-            actor=g.user.username
-        )
-
-        if changes is None:
-            abort(404)
-
-        if changes:
-            flash(
-                "Ticket updated.",
-                "success"
+        # The database checks a new assignee inside that transaction.
+        try:
+            changes = db.update_ticket(
+                ticket_id,
+                status,
+                assigned_to,
+                actor=g.user.username
             )
+
+        except db.InvalidAssigneeError as error:
+            # Nothing was saved, not even the status. The message is the
+            # same for every reason, so the form cannot be used to learn
+            # which accounts exist or are deactivated.
+            app.logger.warning(
+                "Refused assignment of ticket %s: %s",
+                ticket_id, error.reason
+            )
+
+            flash(
+                "Ticket not updated: tickets can only be assigned to an "
+                "active technician or administrator.",
+                "danger"
+            )
+
         else:
-            flash(
-                "No changes to save.",
-                "info"
-            )
+            if changes is None:
+                abort(404)
+
+            if changes:
+                flash(
+                    "Ticket updated.",
+                    "success"
+                )
+            else:
+                flash(
+                    "No changes to save.",
+                    "info"
+                )
 
     return redirect(
         url_for(
@@ -1360,6 +1390,37 @@ def init_db_command(backup_to):
         click.echo(f"  applied {migration.version}: {migration.description}")
 
     click.echo(f"Database schema is now at version {result.final_version}.")
+
+
+@app.cli.command("assignment-audit")
+def assignment_audit_command():
+    """List tickets assigned to accounts that could not be chosen today.
+
+    Read-only: the database is opened with mode=ro and nothing is fixed
+    automatically. Such tickets keep their assignee and history; reassign
+    or unassign them from the ticket page. Exits 1 if any are found.
+    """
+
+    if not os.path.exists(db.DB_PATH):
+        _fail("the database file does not exist.")
+
+    try:
+        found = db.find_ineligible_assignments()
+    except sqlite3.Error as error:
+        _fail(f"could not read the database ({type(error).__name__})")
+
+    if not found:
+        click.echo("Every assigned ticket has an eligible assignee.")
+        return
+
+    click.echo(f"{len(found)} ticket(s) have an assignee who is no longer "
+               "eligible:")
+
+    for ticket_id, assignee, reason in found:
+        # repr() shows hidden characters in hand-edited values safely
+        click.echo(f"  ticket #{ticket_id}: {assignee!r} ({reason})")
+
+    sys.exit(1)
 
 
 def schema_ready_for_startup():

@@ -15,6 +15,7 @@ version:
     4  response SLA deadlines (ticket_sla)
     5  account activation status (users.is_active)
     6  session revocation (users.session_version and its trigger)
+    7  stable usernames (no renaming, no reuse of names in ticket records)
 
 Each migration in MIGRATIONS moves the schema forward by exactly one
 version. migrate() applies every migration above the stored version, in
@@ -404,6 +405,58 @@ def _migration_6_session_version(conn):
 
 
 # ---------------------------------------------------
+# MIGRATION 7: STABLE USERNAMES
+# ---------------------------------------------------
+
+def _migration_7_stable_usernames(conn):
+    """
+    Stop usernames from being changed or handed to a new person.
+
+    Tickets, comments and history refer to accounts by username. If an
+    account were deleted and a new one created with the same name, the
+    new person would own the old person's tickets and be shown as the
+    author of their comments. Two triggers prevent that:
+
+      users_username_immutable          a username can never be changed
+      users_no_historical_username_reuse  a new account cannot take a
+                                        name that ticket records use
+
+    Deleting or deactivating an account is still allowed: its records keep
+    the old name, and that name stays reserved. No rows are changed, so
+    existing tickets, accounts and history are exactly as they were.
+    """
+
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS users_username_immutable
+        BEFORE UPDATE OF username ON users
+        FOR EACH ROW
+        WHEN OLD.username IS NOT NEW.username
+        BEGIN
+            SELECT RAISE(ABORT, 'usernames cannot be changed');
+        END
+    """)
+
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS users_no_historical_username_reuse
+        BEFORE INSERT ON users
+        FOR EACH ROW
+        WHEN EXISTS (SELECT 1 FROM tickets
+                     WHERE created_by = NEW.username
+                        OR assigned_to = NEW.username)
+          OR EXISTS (SELECT 1 FROM comments
+                     WHERE author = NEW.username)
+          OR EXISTS (SELECT 1 FROM ticket_history
+                     WHERE actor = NEW.username
+                        OR old_value = NEW.username
+                        OR new_value = NEW.username)
+        BEGIN
+            SELECT RAISE(ABORT,
+                'username is already used by existing ticket records');
+        END
+    """)
+
+
+# ---------------------------------------------------
 # MIGRATION REGISTRY
 # ---------------------------------------------------
 
@@ -419,6 +472,8 @@ MIGRATIONS = (
     Migration(5, "Add account activation status",
               _migration_5_account_activation),
     Migration(6, "Add session revocation", _migration_6_session_version),
+    Migration(7, "Keep usernames stable and stop their reuse",
+              _migration_7_stable_usernames),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1].version
@@ -509,10 +564,28 @@ _SESSION_TRIGGER_PARTS = (
     "SET SESSION_VERSION = SESSION_VERSION + 1 WHERE ID = NEW.ID",
 )
 
-# trigger -> the event it must block on ticket_history
+# trigger -> the event it must block (each must also RAISE(ABORT ...))
 _TRIGGERS = {
     "ticket_history_no_update": "BEFORE UPDATE ON TICKET_HISTORY",
     "ticket_history_no_delete": "BEFORE DELETE ON TICKET_HISTORY",
+    "users_username_immutable": "BEFORE UPDATE OF USERNAME ON USERS",
+    "users_no_historical_username_reuse": "BEFORE INSERT ON USERS",
+}
+
+# Text each username trigger must also contain, after normalising, so a
+# trigger with the right name but a weakened condition is rejected
+_USERNAME_TRIGGER_PARTS = {
+    "users_username_immutable": (
+        "WHEN OLD.USERNAME IS NOT NEW.USERNAME",
+    ),
+    "users_no_historical_username_reuse": (
+        "CREATED_BY = NEW.USERNAME",
+        "ASSIGNED_TO = NEW.USERNAME",
+        "AUTHOR = NEW.USERNAME",
+        "ACTOR = NEW.USERNAME",
+        "OLD_VALUE = NEW.USERNAME",
+        "NEW_VALUE = NEW.USERNAME",
+    ),
 }
 
 
@@ -624,7 +697,14 @@ def find_schema_problems(conn):
 
         if not sql:
             problems.append(f"missing trigger {trigger}")
-        elif event not in sql or "RAISE(ABORT" not in sql:
+        elif (
+            event not in sql
+            or "RAISE(ABORT" not in sql
+            or not all(
+                part in sql
+                for part in _USERNAME_TRIGGER_PARTS.get(trigger, ())
+            )
+        ):
             problems.append(f"trigger {trigger} has unexpected behaviour")
 
     return problems

@@ -41,6 +41,7 @@ class TestTicketOwnership(unittest.TestCase):
         self.alice_ticket = {
             "id": 1,
             "created_by": "alice",
+            "assigned_to": None,
             "status": "Open",
             "priority": "High"
         }
@@ -48,6 +49,7 @@ class TestTicketOwnership(unittest.TestCase):
         self.bob_ticket = {
             "id": 2,
             "created_by": "bob",
+            "assigned_to": None,
             "status": "Resolved",
             "priority": "Low"
         }
@@ -82,8 +84,11 @@ class TestTicketOwnership(unittest.TestCase):
             "app.db.get_ticket_sla_status",
             return_value=None
         ), patch(
-            "app.db.get_all_usernames",
+            "app.db.get_assignable_users",
             return_value=[]
+        ), patch(
+            "app.db.get_assignee_problem",
+            return_value=None
         ), patch(
             "app.render_template",
             return_value="Ticket details"
@@ -133,8 +138,11 @@ class TestTicketOwnership(unittest.TestCase):
             "app.db.get_ticket_sla_status",
             return_value=None
         ), patch(
-            "app.db.get_all_usernames",
+            "app.db.get_assignable_users",
             return_value=[]
+        ), patch(
+            "app.db.get_assignee_problem",
+            return_value=None
         ), patch(
             "app.render_template",
             return_value="Ticket details"
