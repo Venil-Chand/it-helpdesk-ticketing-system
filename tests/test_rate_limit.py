@@ -1,8 +1,11 @@
 
+import os
 import re
+import tempfile
 import unittest
 from unittest.mock import patch
 
+import database
 from app import app
 
 
@@ -22,6 +25,19 @@ class TestLoginRateLimit(unittest.TestCase):
 
         # Use a separate test IP address
         self.test_ip = "198.51.100.200"
+
+        # Point the database at a folder that does not exist. Failed sign-ins
+        # are recorded in the audit log, so without this the login attempts
+        # below would be written to the real helpdesk.db when the suite is
+        # run inside the project folder.
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        db_guard = patch.object(
+            database, "DB_PATH",
+            os.path.join(temp_dir.name, "missing", "helpdesk.db")
+        )
+        db_guard.start()
+        self.addCleanup(db_guard.stop)
 
     def tearDown(self):
         # Restore application settings
