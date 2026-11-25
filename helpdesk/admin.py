@@ -233,10 +233,21 @@ def reset_password(user_id):
 @bp.route("/audit")
 @admin_required
 def audit_log():
-    """Show the most recent administrative audit events."""
+    """
+    Show the most recent audit events.
+
+    ?kind=accounts or ?kind=logins narrows the list. Any other value is
+    ignored (allow list), so it can never reach the SQL.
+    """
+
+    kind = request.args.get("kind")
+
+    if kind not in accounts.AUDIT_CATEGORIES:
+        kind = None
 
     return render_template(
         "admin_audit.html",
-        events=accounts.list_audit_events(),
+        events=accounts.list_audit_events(category=kind),
+        kind=kind,
         max_events=accounts.MAX_AUDIT_EVENTS
     )

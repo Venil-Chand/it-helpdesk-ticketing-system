@@ -97,10 +97,29 @@ class AccountTestCase(unittest.TestCase):
         return rows[0] if rows else None
 
     def audit(self):
+        """Account administration events, without sign-in records.
+
+        Every signed_in() and can_log_in() call is itself recorded as a
+        login event (migration 9). Those are checked by login_events() and
+        test_login_audit.py, so they are left out here to keep the exact
+        account-event assertions of these tests unchanged.
+        """
+
         return self.sql(
             "SELECT actor_user_id, actor, action, target_user_id, "
             "target_username, old_value, new_value "
-            "FROM audit_events ORDER BY id"
+            "FROM audit_events "
+            "WHERE action NOT IN ('login_succeeded', 'login_failed') "
+            "ORDER BY id"
+        )
+
+    def login_events(self):
+        return self.sql(
+            "SELECT actor_user_id, actor, action, target_user_id, "
+            "target_username, new_value, source_address "
+            "FROM audit_events "
+            "WHERE action IN ('login_succeeded', 'login_failed') "
+            "ORDER BY id"
         )
 
     def new_client(self):

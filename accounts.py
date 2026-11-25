@@ -49,6 +49,8 @@ ACCOUNT_DEACTIVATED = "account_deactivated"
 ACCOUNT_REACTIVATED = "account_reactivated"
 PASSWORD_RESET = "password_reset"
 PASSWORD_CHANGED = "password_changed"
+LOGIN_SUCCEEDED = "login_succeeded"
+LOGIN_FAILED = "login_failed"
 
 AUDIT_ACTIONS = frozenset({
     ACCOUNT_CREATED,
@@ -57,7 +59,28 @@ AUDIT_ACTIONS = frozenset({
     ACCOUNT_REACTIVATED,
     PASSWORD_RESET,
     PASSWORD_CHANGED,
+    LOGIN_SUCCEEDED,
+    LOGIN_FAILED,
 })
+
+# Actions shown by each filter of the audit log page
+AUDIT_CATEGORIES = {
+    "accounts": (ACCOUNT_CREATED, ROLE_CHANGED, ACCOUNT_DEACTIVATED,
+                 ACCOUNT_REACTIVATED, PASSWORD_RESET, PASSWORD_CHANGED),
+    "logins": (LOGIN_SUCCEEDED, LOGIN_FAILED),
+}
+
+# Why a login failed, as stored in new_value. The login page always shows
+# the same message; these are only for administrators reading the log.
+LOGIN_UNKNOWN_ACCOUNT = "unknown account"
+LOGIN_WRONG_PASSWORD = "wrong password"
+LOGIN_ACCOUNT_DEACTIVATED = "account deactivated"
+
+# Who is recorded as the actor of a login attempt that did not succeed
+ANONYMOUS_ACTOR = "anonymous"
+
+# Longest client address stored (an IPv6 address is at most 45 characters)
+MAX_SOURCE_ADDRESS_LENGTH = 64
 
 # Most audit events one page shows
 MAX_AUDIT_EVENTS = 200
@@ -98,7 +121,7 @@ def hash_password(password):
 
 def record_audit_event(conn, *, actor, action, actor_user_id=None,
                        target_user_id=None, target_username=None,
-                       old_value=None, new_value=None):
+                       old_value=None, new_value=None, source_address=None):
     """
     Add one audit event using the caller's open connection.
 
@@ -112,31 +135,49 @@ def record_audit_event(conn, *, actor, action, actor_user_id=None,
         """
         INSERT INTO audit_events
         (actor_user_id, actor, action, target_user_id, target_username,
-         old_value, new_value)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+         old_value, new_value, source_address)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (actor_user_id, actor, action, target_user_id, target_username,
-         old_value, new_value)
+         old_value, new_value,
+         (source_address or None) and source_address[
+             :MAX_SOURCE_ADDRESS_LENGTH]
+         )
     )
 
 
-def list_audit_events(limit=MAX_AUDIT_EVENTS):
-    """The most recent audit events, newest first."""
+def list_audit_events(limit=MAX_AUDIT_EVENTS, category=None):
+    """
+    The most recent audit events, newest first.
+
+    category is a key of AUDIT_CATEGORIES, or None for every event. Any
+    other value raises KeyError; callers check it against the allow list.
+    """
 
     limit = max(1, min(int(limit), MAX_AUDIT_EVENTS))
+
+    where = ""
+    params = []
+
+    if category is not None:
+        actions = AUDIT_CATEGORIES[category]
+        where = f"WHERE action IN ({', '.join('?' for _ in actions)})"
+        params.extend(actions)
 
     conn = db.get_db()
 
     try:
         return conn.execute(
-            """
+            f"""
             SELECT id, created_at, actor_user_id, actor, action,
-                   target_user_id, target_username, old_value, new_value
+                   target_user_id, target_username, old_value, new_value,
+                   source_address
             FROM audit_events
+            {where}
             ORDER BY created_at DESC, id DESC
             LIMIT ?
             """,
-            (limit,)
+            (*params, limit)
         ).fetchall()
 
     finally:
@@ -568,3 +609,46 @@ def change_own_password(user_id, session_version, current_password,
         ).fetchone()[0]
 
     return _run(change)
+
+
+# ---------------------------------------------------
+# LOGIN EVENTS
+# ---------------------------------------------------
+
+def record_login_event(*, succeeded, account=None, reason=None,
+                       source_address=None):
+    """
+    Record one sign-in attempt in its own short transaction.
+
+    Stored: the outcome, the account (only if it exists), the reason for a
+    failure, and the client address. Never stored: the password, the
+    session cookie, or a username that matches no account (it may be a
+    typo of someone's password, so it is not kept at all).
+
+    Raises sqlite3.Error if the event cannot be saved; the caller decides
+    whether to continue.
+    """
+
+    if succeeded:
+        values = dict(
+            actor_user_id=account["id"],
+            actor=account["username"],
+            action=LOGIN_SUCCEEDED,
+        )
+    else:
+        values = dict(actor=ANONYMOUS_ACTOR, action=LOGIN_FAILED,
+                      new_value=reason)
+
+    if account is not None:
+        values.update(target_user_id=account["id"],
+                      target_username=account["username"])
+
+    conn = db.get_db()
+
+    try:
+        with conn:
+            record_audit_event(conn, source_address=source_address,
+                               **values)
+
+    finally:
+        conn.close()
