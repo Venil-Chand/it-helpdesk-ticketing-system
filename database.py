@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 import migrations
 import sla_storage
+from notifications import events as notification_events
 from sla import (
     ALERT_WINDOW,
     is_qualifying_response,
@@ -534,7 +535,8 @@ def create_ticket(title, description, priority, created_by):
             # Get the ID of the newly created ticket
             ticket_id = cursor.lastrowid
 
-            _record_event(conn, ticket_id, created_by, "created")
+            history_id = _record_event(conn, ticket_id, created_by,
+                                       "created")
 
             # Base the deadline on the creation time SQLite stored, so
             # the SLA and the ticket can never disagree about it. An
@@ -549,6 +551,13 @@ def create_ticket(title, description, priority, created_by):
                 ticket_id,
                 stored["priority"],
                 sla_storage.parse_stored_utc(stored["created_at"])
+            )
+
+            # Queued in this transaction and delivered later by the worker,
+            # so nothing is sent unless the ticket is really saved. A
+            # problem here is logged and never stops the ticket.
+            notification_events.ticket_created(
+                conn, ticket_id=ticket_id, history_id=history_id
             )
 
         return ticket_id
@@ -765,11 +774,20 @@ def update_ticket(ticket_id, status, assigned_to, *, actor):
             )
 
             # Status and assignment are recorded as separate events
+            recorded = []
+
             for action, field_name, old_value, new_value in changes:
-                _record_event(
+                history_id = _record_event(
                     conn, ticket_id, actor, action,
                     field_name, old_value, new_value
                 )
+                recorded.append(
+                    (history_id, action, field_name, old_value, new_value)
+                )
+
+            notification_events.ticket_changed(
+                conn, ticket_id=ticket_id, actor=actor, changes=recorded
+            )
 
         return changes
 
@@ -832,9 +850,14 @@ def add_comment(ticket_id, author, content):
                 (ticket_id,)
             )
 
-            _record_event(conn, ticket_id, author, "commented")
+            history_id = _record_event(conn, ticket_id, author, "commented")
 
             _record_sla_response(conn, comment_id)
+
+            notification_events.comment_added(
+                conn, ticket_id=ticket_id, history_id=history_id,
+                author=author
+            )
 
     finally:
         conn.close()
@@ -924,9 +947,10 @@ def _record_event(
 
     This deliberately never commits. The caller commits the ticket
     change and its history event together in a single transaction.
+    Returns the new event's id.
     """
 
-    conn.execute(
+    cursor = conn.execute(
         '''
         INSERT INTO ticket_history
         (ticket_id, actor, action, field_name, old_value, new_value)
@@ -934,6 +958,8 @@ def _record_event(
         ''',
         (ticket_id, actor, action, field_name, old_value, new_value)
     )
+
+    return cursor.lastrowid
 
 
 def get_ticket_history(ticket_id):

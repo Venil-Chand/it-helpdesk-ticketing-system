@@ -58,7 +58,7 @@ class TestUpgradeToVersionEight(AuditMigrationTestCase):
 
         result = migrations.migrate(self.path)
 
-        self.assertEqual([m.version for m in result.applied], [8, 9])
+        self.assertEqual([m.version for m in result.applied], [8, 9, 10])
         self.assertEqual(result.final_version, SCHEMA_VERSION)
 
         # Every original column of every row is unchanged. Migration 9
@@ -99,7 +99,7 @@ class TestUpgradeToVersionEight(AuditMigrationTestCase):
         status = migrations.schema_status(self.path)
 
         self.assertEqual(status.state, "outdated")
-        self.assertEqual([m.version for m in status.pending], [8, 9])
+        self.assertEqual([m.version for m in status.pending], [8, 9, 10])
 
 
 class TestAuditEventsAreAppendOnly(AuditMigrationTestCase):

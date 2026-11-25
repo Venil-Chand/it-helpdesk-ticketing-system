@@ -21,6 +21,10 @@ env/
 # Environment variables — keep secrets out of Git
 .env
 
+# Local runtime data: simulated notification emails (they name real
+# accounts) and anything else written under instance/
+instance/
+
 # Editor and OS
 .DS_Store
 Thumbs.db

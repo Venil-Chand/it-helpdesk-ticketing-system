@@ -35,6 +35,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 import database as db
 import validation
+from notifications import events as notification_events
 
 ROLES = ("user", "technician", "admin")
 ADMIN_ROLE = "admin"
@@ -52,6 +53,7 @@ PASSWORD_CHANGED = "password_changed"
 LOGIN_SUCCEEDED = "login_succeeded"
 LOGIN_FAILED = "login_failed"
 AUDIT_ARCHIVED = "audit_archived"
+EMAIL_CHANGED = "email_changed"
 
 AUDIT_ACTIONS = frozenset({
     ACCOUNT_CREATED,
@@ -63,13 +65,14 @@ AUDIT_ACTIONS = frozenset({
     LOGIN_SUCCEEDED,
     LOGIN_FAILED,
     AUDIT_ARCHIVED,
+    EMAIL_CHANGED,
 })
 
 # Actions shown by each filter of the audit log page
 AUDIT_CATEGORIES = {
     "accounts": (ACCOUNT_CREATED, ROLE_CHANGED, ACCOUNT_DEACTIVATED,
                  ACCOUNT_REACTIVATED, PASSWORD_RESET, PASSWORD_CHANGED,
-                 AUDIT_ARCHIVED),
+                 AUDIT_ARCHIVED, EMAIL_CHANGED),
     "logins": (LOGIN_SUCCEEDED, LOGIN_FAILED),
 }
 
@@ -129,12 +132,13 @@ def record_audit_event(conn, *, actor, action, actor_user_id=None,
     Add one audit event using the caller's open connection.
 
     Never commits: the caller saves the change and its event together.
+    Returns the new event's id.
     """
 
     if action not in AUDIT_ACTIONS:
         raise ValueError(f"unknown audit action: {action}")
 
-    conn.execute(
+    cursor = conn.execute(
         """
         INSERT INTO audit_events
         (actor_user_id, actor, action, target_user_id, target_username,
@@ -147,6 +151,8 @@ def record_audit_event(conn, *, actor, action, actor_user_id=None,
              :MAX_SOURCE_ADDRESS_LENGTH]
          )
     )
+
+    return cursor.lastrowid
 
 
 def list_audit_events(limit=MAX_AUDIT_EVENTS, category=None):
@@ -396,7 +402,7 @@ def change_role(actor_id, target_id, new_role):
             (new_role, target["id"])
         )
 
-        record_audit_event(
+        audit_id = record_audit_event(
             conn,
             actor_user_id=actor["id"],
             actor=actor["username"],
@@ -405,6 +411,13 @@ def change_role(actor_id, target_id, new_role):
             target_username=target["username"],
             old_value=target["role"],
             new_value=new_role
+        )
+
+        notification_events.account_event(
+            conn, audit_id=audit_id,
+            event_type=notification_events.ROLE_CHANGED,
+            target_user_id=target["id"],
+            old_role=target["role"], new_role=new_role
         )
 
         stranded = 0
@@ -444,7 +457,7 @@ def set_active(actor_id, target_id, active):
             (new_value, target["id"])
         )
 
-        record_audit_event(
+        audit_id = record_audit_event(
             conn,
             actor_user_id=actor["id"],
             actor=actor["username"],
@@ -452,6 +465,14 @@ def set_active(actor_id, target_id, active):
             target_user_id=target["id"],
             target_username=target["username"]
         )
+
+        # A deactivated account is never notified (it is not active)
+        if active:
+            notification_events.account_event(
+                conn, audit_id=audit_id,
+                event_type=notification_events.ACCOUNT_REACTIVATED,
+                target_user_id=target["id"]
+            )
 
         stranded = 0 if active else _open_assigned_count(
             conn, target["username"]
@@ -505,13 +526,20 @@ def reset_password(actor_id, target_id, password):
             (password_hash, target["id"])
         )
 
-        record_audit_event(
+        audit_id = record_audit_event(
             conn,
             actor_user_id=actor["id"],
             actor=actor["username"],
             action=PASSWORD_RESET,
             target_user_id=target["id"],
             target_username=target["username"]
+        )
+
+        # Tells the owner a reset happened; never contains the password
+        notification_events.account_event(
+            conn, audit_id=audit_id,
+            event_type=notification_events.PASSWORD_RESET,
+            target_user_id=target["id"]
         )
 
         return target["username"]
@@ -597,13 +625,22 @@ def change_own_password(user_id, session_version, current_password,
                 "changed at the same time. Please log in again."
             )
 
-        record_audit_event(
+        audit_id = record_audit_event(
             conn,
             actor_user_id=account["id"],
             actor=account["username"],
             action=PASSWORD_CHANGED,
             target_user_id=account["id"],
             target_username=account["username"]
+        )
+
+        # Sent even though the owner did it: if someone else used a stolen
+        # session, this is how the owner finds out
+        notification_events.account_event(
+            conn, audit_id=audit_id,
+            event_type=notification_events.PASSWORD_CHANGED,
+            target_user_id=account["id"],
+            changed_by=notification_events.CHANGED_BY_OWNER
         )
 
         return conn.execute(
@@ -670,12 +707,20 @@ def operator_reset_password(username, password, *, operator):
                 "Nothing was saved; check the account and try again."
             )
 
-        record_audit_event(
+        audit_id = record_audit_event(
             conn,
             actor=f"cli:{operator}",
             action=PASSWORD_RESET,
             target_user_id=account["id"],
             target_username=account["username"]
+        )
+
+        # The message says "an administrator"; the operating-system
+        # account name stays in the audit log only
+        notification_events.account_event(
+            conn, audit_id=audit_id,
+            event_type=notification_events.PASSWORD_RESET,
+            target_user_id=account["id"]
         )
 
         return account
@@ -742,3 +787,73 @@ def record_login_event(*, succeeded, account=None, reason=None,
 
     finally:
         conn.close()
+
+
+# ---------------------------------------------------
+# NOTIFICATION ADDRESSES (flask set-email)
+# ---------------------------------------------------
+
+# What an email_changed audit event records. The address itself is kept
+# out of the audit log, which is exported to archives.
+EMAIL_SET = "set"
+EMAIL_REPLACED = "replaced"
+EMAIL_CLEARED = "cleared"
+
+
+def operator_set_email(username, email, *, operator):
+    """
+    Set or clear (email=None) the address an account is notified at.
+
+    Run from the server's command line, like reset-password; the actor is
+    recorded as "cli:<operator>". Deactivated accounts may be given an
+    address too: they are simply not notified while deactivated.
+
+    Returns True if the address changed. Raises AccountNotFound, or
+    AccountError if the address is not acceptable.
+    """
+
+    if email is not None:
+        email = email.strip()
+        problem = validation.email_problem(email)
+
+        if problem:
+            raise AccountError(problem)
+
+    def change(conn):
+        conn.execute("BEGIN IMMEDIATE")
+
+        account = conn.execute(
+            "SELECT id, username, email FROM users WHERE username = ?",
+            (username,)
+        ).fetchone()
+
+        if account is None:
+            raise AccountNotFound()
+
+        if account["email"] == email:
+            return False
+
+        conn.execute(
+            "UPDATE users SET email = ? WHERE id = ?",
+            (email, account["id"])
+        )
+
+        if email is None:
+            outcome = EMAIL_CLEARED
+        elif account["email"] is None:
+            outcome = EMAIL_SET
+        else:
+            outcome = EMAIL_REPLACED
+
+        record_audit_event(
+            conn,
+            actor=f"cli:{operator}",
+            action=EMAIL_CHANGED,
+            target_user_id=account["id"],
+            target_username=account["username"],
+            new_value=outcome
+        )
+
+        return True
+
+    return _run(change)

@@ -677,7 +677,7 @@ class TestStableUsernameMigration(unittest.TestCase):
 
         result = migrations.migrate(self.path)
 
-        self.assertEqual([m.version for m in result.applied], [7, 8, 9])
+        self.assertEqual([m.version for m in result.applied], [7, 8, 9, 10])
         for table, before in data.items():
             with self.subTest(table=table):
                 after = self.rows(f"SELECT * FROM {table} ORDER BY 1")
