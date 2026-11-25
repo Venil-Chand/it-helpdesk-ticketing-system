@@ -7,6 +7,9 @@ Database command-line tools, run through Flask's CLI:
     flask --app app reset-password USERNAME
                                       recover an account whose password is
                                       lost, including the last administrator
+    flask --app app audit-archive     copy old audit events to an archive
+    flask --app app audit-verify-archive PATH
+                                      check an archive (read-only)
 
 create_app() attaches these to every application with register_commands().
 They act on database.DB_PATH and never create user accounts; use
@@ -26,6 +29,7 @@ import click
 from flask.cli import with_appcontext
 
 import accounts
+import audit_archive
 import database as db
 import migrations
 
@@ -299,11 +303,100 @@ def reset_password_command(username):
     )
 
 
+@click.command("audit-archive")
+@click.option(
+    "--to", "destination", type=click.Path(dir_okay=False),
+    help="New file to write the archive to (a .manifest.json is added)."
+)
+@click.option(
+    "--before",
+    help="Archive events created before this UTC date (YYYY-MM-DD). "
+         "Default: 12 months ago."
+)
+@click.option(
+    "--dry-run", is_flag=True,
+    help="Only report how many events would be archived."
+)
+@with_appcontext
+def audit_archive_command(destination, before, dry_run):
+    """Copy audit events older than the retention period to an archive.
+
+    Nothing is deleted: the events stay in the database. The archive is
+    created readable only by you; store it encrypted.
+    """
+
+    _require_current_schema()
+
+    try:
+        cutoff = (
+            audit_archive.parse_cutoff(before) if before
+            else audit_archive.default_cutoff()
+        )
+    except audit_archive.ArchiveError as error:
+        _fail(str(error))
+
+    count, oldest = audit_archive.count_archivable(cutoff)
+    click.echo(f"Events created before {cutoff} UTC: {count}"
+               + (f" (oldest {oldest})" if oldest else ""))
+
+    if dry_run:
+        return
+
+    if not destination:
+        _fail("give the archive file with --to, or use --dry-run.")
+
+    try:
+        result = audit_archive.export_archive(
+            destination, before=cutoff, operator=_operator()
+        )
+    except (audit_archive.ArchiveError, OSError, sqlite3.Error) as error:
+        _fail(f"archive not written; the database was not changed "
+              f"({type(error).__name__}: {error})")
+
+    if result is None:
+        click.echo("Nothing to archive.")
+        return
+
+    click.echo(
+        f"Archived {result.count} events (ids {result.first_id}-"
+        f"{result.last_id}) to {result.path}\n"
+        f"Manifest: {result.manifest_path}\nSHA-256: {result.sha256}\n"
+        "The events are still in the database; nothing was deleted."
+    )
+
+
+@click.command("audit-verify-archive")
+@click.argument("path", type=click.Path(dir_okay=False, exists=True))
+@with_appcontext
+def audit_verify_archive_command(path):
+    """Check an audit archive against its manifest and the database.
+
+    Read-only. Exits 1 if anything does not match.
+    """
+
+    result = audit_archive.verify_archive(path)
+
+    click.echo(
+        f"Events in archive: {result.count}; identical in database: "
+        f"{result.in_database}; no longer in database: "
+        f"{result.no_longer_in_database}"
+    )
+
+    if not result.ok:
+        for problem in result.problems:
+            click.echo(f"Problem: {problem}", err=True)
+        sys.exit(1)
+
+    click.echo("Archive verified.")
+
+
 COMMANDS = (
     db_status_command,
     init_db_command,
     assignment_audit_command,
     reset_password_command,
+    audit_archive_command,
+    audit_verify_archive_command,
 )
 
 

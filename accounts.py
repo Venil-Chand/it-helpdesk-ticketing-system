@@ -51,6 +51,7 @@ PASSWORD_RESET = "password_reset"
 PASSWORD_CHANGED = "password_changed"
 LOGIN_SUCCEEDED = "login_succeeded"
 LOGIN_FAILED = "login_failed"
+AUDIT_ARCHIVED = "audit_archived"
 
 AUDIT_ACTIONS = frozenset({
     ACCOUNT_CREATED,
@@ -61,12 +62,14 @@ AUDIT_ACTIONS = frozenset({
     PASSWORD_CHANGED,
     LOGIN_SUCCEEDED,
     LOGIN_FAILED,
+    AUDIT_ARCHIVED,
 })
 
 # Actions shown by each filter of the audit log page
 AUDIT_CATEGORIES = {
     "accounts": (ACCOUNT_CREATED, ROLE_CHANGED, ACCOUNT_DEACTIVATED,
-                 ACCOUNT_REACTIVATED, PASSWORD_RESET, PASSWORD_CHANGED),
+                 ACCOUNT_REACTIVATED, PASSWORD_RESET, PASSWORD_CHANGED,
+                 AUDIT_ARCHIVED),
     "logins": (LOGIN_SUCCEEDED, LOGIN_FAILED),
 }
 

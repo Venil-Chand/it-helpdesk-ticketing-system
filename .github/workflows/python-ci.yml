@@ -51,7 +51,7 @@ jobs:
       # Step 5: Check Python syntax
       - name: Check Python syntax
         run: |
-          python -m compileall -q accounts.py app.py csv_export.py database.py migrations.py proxy_trust.py security_config.py setup_accounts.py sla.py sla_storage.py validation.py helpdesk
+          python -m compileall -q accounts.py app.py audit_archive.py csv_export.py database.py migrations.py proxy_trust.py security_config.py setup_accounts.py sla.py sla_storage.py validation.py helpdesk scripts
 
       # Step 6: Run automated tests
       - name: Run unit tests
