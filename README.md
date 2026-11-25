@@ -53,8 +53,9 @@ The project demonstrates Python programming, web development, relational databas
 - **Forced password changes** — a password set by an administrator must be replaced by its owner before anything else can be done
 - **Administrator recovery** — `flask --app app reset-password USERNAME` recovers a lost password, including the last administrator's, from the server's command line
 - **Audit archiving** — copy events older than the retention period to a verified, checksummed archive without deleting anything
+- **Email notifications** — ticket creation, assignment, comments, resolution and account-security changes queue notifications in the same database transaction; a separate worker (`flask --app app notifications-send`) delivers them with bounded retries, to a private local folder in development (simulated, never sent) or through SMTP. See [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md)
 - **Versioned database migrations** — explicit `flask --app app init-db` and read-only `db-status` commands; upgrades run in one transaction and never seed accounts
-- **Automated tests** — 1,062 tests covering the application factory, password policy, forced password changes, sign-in auditing, administrator recovery, audit archiving, authentication, authorization, CSRF, account administration, password changes, audit events, search, pagination, CSV export, history, assignment rules, SLA policy and monitoring, and database migrations
+- **Automated tests** — 1,228 tests covering notifications (events, recipients, queue concurrency, retries, SMTP failures), the application factory, password policy, forced password changes, sign-in auditing, administrator recovery, audit archiving, authentication, authorization, CSRF, account administration, password changes, audit events, search, pagination, CSV export, history, assignment rules, SLA policy and monitoring, and database migrations
 
 ---
 
@@ -348,7 +349,8 @@ The database structure is defined in `migrations.py` as a numbered list of **mig
 | 6 | Session revocation | `users.session_version` and the `users_revoke_sessions` trigger |
 | 7 | Stable usernames | `users_username_immutable` and `users_no_historical_username_reuse` triggers; no rows changed |
 | 8 | Audit events | Append-only `audit_events`, its index and its two protective triggers; no existing rows changed and no events invented for past changes |
-| 9 | Account policy | `users.must_change_password` (0 for every existing account) and `audit_events.source_address` (NULL for older events); no rows changed, append-only triggers untouched (current version) |
+| 9 | Account policy | `users.must_change_password` (0 for every existing account) and `audit_events.source_address` (NULL for older events); no rows changed, append-only triggers untouched |
+| 10 | Notification queue | `users.email` (NULL for every existing account), the `notifications` queue with a UNIQUE `dedupe_key`, the append-only `notification_attempts` history, their indexes and triggers; no rows changed and no notifications invented for past events (current version) |
 
 The version is stored inside the database file itself, using SQLite's built-in `PRAGMA user_version` header field. No extra table is needed.
 
@@ -363,6 +365,10 @@ The version is stored inside the database file itself, using SQLite's built-in `
 | `flask --app app reset-password USERNAME` | Sets a temporary password typed at a hidden prompt, ends every session and forces a change at next sign-in. See [Administrator recovery](#administrator-recovery). | Yes (one account, audited) |
 | `flask --app app audit-archive --to FILE` | Copies audit events older than the retention period to a private archive with a manifest. `--dry-run` only counts. | Adds one `audit_archived` event; deletes nothing |
 | `flask --app app audit-verify-archive FILE` | Checks an archive against its manifest and the database. Exits with status 1 on any problem. | Never |
+| `flask --app app notifications-send [--loop]` | Delivers queued notifications (see [Email Notifications](#email-notifications)). Exits 2 if the mail server was unavailable. | Queue rows and delivery history only |
+| `flask --app app notifications-status` | Queue counts and recent failures, without addresses or content. | Never |
+| `flask --app app notifications-check-config` | Validates the delivery settings without connecting anywhere; never prints the SMTP password. | Never |
+| `flask --app app set-email USERNAME ADDRESS` (or `--clear`) | Sets where an account is notified. Audited without the address. | Yes (one account, audited) |
 
 None of these commands creates user accounts or prints passwords, password hashes, ticket contents or `.env` values.
 
@@ -510,7 +516,17 @@ it-helpdesk-ticketing-system/
 │   ├── ticket_filters.py        (filters shared by dashboard and export)
 │   ├── cli.py                   (db-status, init-db, assignment-audit,
 │   │                             reset-password, audit-archive, audit-verify-archive)
+│   ├── notification_cli.py      (notifications-send, notifications-status,
+│   │                             notifications-check-config, set-email)
 │   └── clock.py                 (the one clock every route reads)
+├── notifications/               (email notification engine)
+│   ├── events.py                (event types, recipient rules, queueing hooks)
+│   ├── queue.py                 (claims, leases, retries, recovery)
+│   ├── worker.py                (the delivery loop)
+│   ├── transport.py             (local sink and SMTP)
+│   ├── render.py                (plain-text messages)
+│   ├── settings.py              (environment variables)
+│   └── timeutil.py              (UTC queue timestamps)
 ├── database.py
 ├── accounts.py                  (account administration rules and audit events)
 ├── audit_archive.py             (audit archive export and verification)
@@ -528,7 +544,8 @@ it-helpdesk-ticketing-system/
 │   ├── README.md                (blocklist sources, checksums and limits)
 │   └── common_passwords.txt.gz
 ├── docs/
-│   └── AUDIT_RETENTION.md
+│   ├── AUDIT_RETENTION.md
+│   └── NOTIFICATIONS.md         (notification architecture, rules, deployment)
 ├── requirements.txt
 ├── .env.example
 ├── .gitignore
@@ -544,6 +561,8 @@ it-helpdesk-ticketing-system/
 │   ├── test_reset_password_cli.py
 │   ├── test_audit_archive.py
 │   ├── account_helpers.py       (shared fixture for account tests)
+│   ├── notification_helpers.py  (notification fixture, fake SMTP, network guard)
+│   ├── test_notification_*.py   (events, queue, delivery, worker, CLI, migration)
 │   ├── test_assignment_validation.py
 │   ├── test_authentication.py
 │   ├── test_authorization.py
@@ -604,8 +623,9 @@ it-helpdesk-ticketing-system/
 | `security_config.py` | Validates environment settings and defines cookies, headers and the CSP |
 | `validation.py` | Server-side text and request size limits, and the password policy |
 | `audit_archive.py` | Copies old audit events to a checksummed archive and verifies it; never deletes |
+| `notifications/` | The notification engine: queued in the ticket or account transaction, delivered by a separate worker (see [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md)) |
 | `proxy_trust.py` | Believes forwarded headers only from configured proxies |
-| `tests/` | 1,062 automated tests covering the application factory, account policy and recovery, auth, CSRF, ownership, search, pagination, CSV export, history, assignment, SLA, migrations and production security |
+| `tests/` | 1,228 automated tests covering notifications, the application factory, account policy and recovery, auth, CSRF, ownership, search, pagination, CSV export, history, assignment, SLA, migrations and production security |
 
 The local `helpdesk.db` database and `.env` file are excluded from version control.
 
@@ -1132,6 +1152,33 @@ The SLA cards, rows and filter use exactly the same ownership rule as the ticket
 
 ---
 
+## Email Notifications
+
+Ticket and account events queue email notifications in the same database transaction as the change itself. Nothing is ever sent from a web request: a separate worker delivers the queue after the change has been committed. The full design, recipient rules, configuration, retry behaviour and deployment steps are in **[docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md)**.
+
+| Event | Who is notified |
+|---|---|
+| Ticket created | The requester (confirmation) and every active technician and administrator |
+| Assigned / reassigned / unassigned | The new and the previous assignee (unless they did it themselves) |
+| Staff comment | The requester and the assignee, except the author |
+| Requester comment | The assignee |
+| Resolved / closed | The requester (unless they did it themselves) |
+| Password changed or reset, role changed, account reactivated | The account owner |
+
+Only existing, active accounts with an address are notified; staff-only events also require a technician or admin role, and everything is checked again just before delivery. Messages contain ticket numbers and statuses but never titles, descriptions, comments, passwords, tokens or cookies.
+
+Local development needs no SMTP account:
+
+```bash
+flask --app app set-email alice alice@example.org
+flask --app app notifications-send       # writes instance/notification-sink/*.eml (SIMULATED)
+flask --app app notifications-status
+```
+
+SMTP delivery is configured only through environment variables (`NOTIFICATION_DELIVERY=smtp`, `NOTIFICATION_SMTP_HOST`, `NOTIFICATION_SMTP_USERNAME`, `NOTIFICATION_SMTP_PASSWORD`, ...), uses verified STARTTLS by default, and retries a bounded number of times with exponential backoff. Ordinary SMTP cannot guarantee exactly-once delivery; the chosen mitigation (at-least-once, at most `NOTIFICATION_MAX_ATTEMPTS` deliveries per notification, a stable Message-ID) is explained in the documentation.
+
+---
+
 ## Production Security Configuration
 
 The application chooses its security behaviour from `APP_ENV`. Local development needs no new settings. **This project has not been deployed publicly**, and the deployment steps below are requirements to meet first.
@@ -1269,7 +1316,7 @@ These tests build a separate application for each environment and use temporary 
 
 ## Automated Testing
 
-The project includes 1,062 automated tests using Python's built-in `unittest` framework. CI runs them on Python 3.13.
+The project includes 1,228 automated tests using Python's built-in `unittest` framework. CI runs them on Python 3.13.
 
 To run the full suite:
 
@@ -1331,6 +1378,12 @@ python -m unittest tests.test_search_route -v
 | `test_proxy_trust.py` | 23 | Forwarded-header trust, rate-limit spoofing, HTTPS detection and Host validation |
 | `test_assignment_validation.py` | 45 | Valid, missing, deleted, deactivated and wrong-role assignees; tampered requests; refusal saves nothing; former assignees kept; the audit command; username reuse and renaming; migration 7 |
 | `test_sla_policy.py` | 30 | Deadlines; what is and is not a first response; reopened, closed and unanswered tickets; ticket page, dashboard and CSV agreeing; time zones; the shared timestamp format |
+| `test_notification_events.py` | 53 | Every event and its recipients; inactive, missing, demoted and invalid historical accounts skipped; actor exclusion; duplicate events; queued in the same transaction; notification failures never undo a ticket or account change; no titles, descriptions, comments or passwords queued; routes, ownership and CSRF |
+| `test_notification_queue.py` | 27 | Claiming, due times, exponential backoff, bounded retries, permanent failure, deferrals, expiry, interrupted workers and lease recovery, claim tokens, append-only attempts, concurrent workers sending each message exactly once, no transaction held during delivery |
+| `test_notification_delivery.py` | 31 | Settings validation (no values echoed, password never in `repr`), local sink permissions and idempotency, STARTTLS with no fallback, sign-in failures, timeouts, disconnects, 4xx/5xx classification, sanitised errors, network guard |
+| `test_notification_worker.py` | 27 | End-to-end delivery; recipients re-checked at delivery; message contents and sensitive-data exclusion; header injection; SMTP outages and bad credentials; duplicates bounded by the attempt limit; crash recovery; stopping the loop |
+| `test_notification_cli.py` | 16 | `notifications-send` exit codes and production rules, `notifications-status`, `notifications-check-config`, `set-email` auditing and refusals |
+| `test_notification_migration.py` | 12 | Migration 10 keeps every row (including the invalid historical assignee), rollback to version 9, schema validation, CHECK and foreign-key constraints |
 | `test_application_factory.py` | 70 | `create_app()` settings; independent applications (config, HTTPS, headers, secret keys, rate-limit counters); exact URL map and endpoint names; every template `url_for()`; security hooks registered once and in order; auth, ownership, sessions, CSRF and headers on every blueprint; tickets, assignment, SLA and CSV; CLI commands; `.env` rules; production failures; every SQLite connection closed |
 
 Tests never touch the real `helpdesk.db`:
@@ -1382,7 +1435,7 @@ Coverage is still not exhaustive. Concurrent migration attempts are tested, but 
 | Administrative audit log | Append-only (enforced by triggers); no passwords recorded; archiving without deletion |
 | Ticket assignment | Only active technicians and administrators; enforced in the database transaction; tested |
 | Username reuse | Usernames cannot be renamed or given to a new account while ticket records use them (migration 7) |
-| Automated security testing | 1,062 tests covering password policy, forced changes, sign-in auditing, recovery, audit archiving, account administration, password changes, audit events, the application factory, auth, CSRF, ownership, search, pagination, export, history, assignment, SLA, migrations and production security |
+| Automated security testing | 1,228 tests covering password policy, forced changes, sign-in auditing, recovery, audit archiving, account administration, password changes, audit events, the application factory, auth, CSRF, ownership, search, pagination, export, history, assignment, SLA, migrations and production security |
 
 **Session limits:** a stolen cookie remains usable until the user logs out, changes their password, is deactivated, or the 8-hour limit passes. Logout cannot target a single device. A request already being processed when a session is revoked may finish. Local development uses plain HTTP, so it must not be exposed to an untrusted network.
 
@@ -1394,7 +1447,7 @@ Security improvements are ongoing.
 
 ## Current Limitations
 
-- No email notifications
+- Email notifications are implemented but no SMTP provider has been chosen; only simulated local delivery has been used (see [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md#known-limitations))
 - No automatic SLA alerts; overdue tickets are visible only on the dashboard
 - No file attachments
 - No end-to-end browser testing
@@ -1437,7 +1490,8 @@ Security improvements are ongoing.
 
 ### Application Features
 
-- [ ] Email notifications
+- [x] Email notifications (queue, worker, local and SMTP delivery)
+- [ ] Choose an SMTP provider and enable real delivery
 - [ ] File attachments
 - [x] Dashboard pagination
 - [x] Ticket export to CSV
