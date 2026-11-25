@@ -166,7 +166,7 @@ def setup_account():
             conn.execute(
                 """
                 UPDATE users
-                SET password_hash = ?
+                SET password_hash = ?, must_change_password = 0
                 WHERE id = ?
                 """,
                 (password_hash, user["id"])

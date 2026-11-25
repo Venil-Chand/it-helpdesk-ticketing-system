@@ -18,6 +18,9 @@ Rules enforced here, on the server, whatever the form sends:
   * Accounts are never deleted. Deactivation keeps every ticket, comment
     and history entry exactly as it was.
   * Passwords and password hashes are never written to the audit log.
+  * A password chosen by someone else (a new account or an
+    administrator's reset) must be changed by the owner before the
+    account can do anything else (must_change_password).
 
 Session effects: changing a password or the active status ends every
 session of that account (the users_revoke_sessions trigger, migration 6).
@@ -159,6 +162,7 @@ def list_accounts():
         return conn.execute(
             f"""
             SELECT u.id, u.username, u.role, u.is_active,
+                   u.must_change_password,
                    (SELECT COUNT(*) FROM tickets AS t
                     WHERE t.assigned_to = u.username
                       AND t.status IN ({placeholders})) AS open_assigned
@@ -295,8 +299,9 @@ def create_account(actor_id, username, role, password):
         try:
             cursor = conn.execute(
                 """
-                INSERT INTO users (username, password_hash, role)
-                VALUES (?, ?, ?)
+                INSERT INTO users
+                (username, password_hash, role, must_change_password)
+                VALUES (?, ?, ?, 1)
                 """,
                 (username, password_hash, role)
             )
@@ -418,8 +423,9 @@ def reset_password(actor_id, target_id, password):
     Set another account's password, ending all of its sessions.
 
     For a user who has forgotten their password. The administrator gives
-    the new password to the user through a separate, trusted channel.
-    Returns the account's username.
+    the new password to the user through a separate, trusted channel, and
+    the user must replace it at their next sign-in. Returns the account's
+    username.
     """
 
     # Read first so the password can be compared with the username before
@@ -448,7 +454,10 @@ def reset_password(actor_id, target_id, password):
         )
 
         conn.execute(
-            "UPDATE users SET password_hash = ? WHERE id = ?",
+            """
+            UPDATE users SET password_hash = ?, must_change_password = 1
+            WHERE id = ?
+            """,
             (password_hash, target["id"])
         )
 
@@ -530,7 +539,7 @@ def change_own_password(user_id, session_version, current_password,
 
         cursor = conn.execute(
             """
-            UPDATE users SET password_hash = ?
+            UPDATE users SET password_hash = ?, must_change_password = 0
             WHERE id = ? AND password_hash = ? AND is_active = 1
               AND session_version = ?
             """,

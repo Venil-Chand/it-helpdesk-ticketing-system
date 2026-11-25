@@ -513,6 +513,40 @@ def _migration_8_audit_events(conn):
 
 
 # ---------------------------------------------------
+# MIGRATION 9: ACCOUNT POLICY AND LOGIN EVENTS
+# ---------------------------------------------------
+
+def _migration_9_account_policy(conn):
+    """
+    Add users.must_change_password and audit_events.source_address.
+
+    must_change_password = 1 means the account may only change its
+    password (or log out) until it does. Administrators set it when they
+    create an account or reset a password, so a password someone else
+    chose is never kept. Every existing account gets 0: nobody is forced
+    to change a password they already chose.
+
+    source_address is the client address of a login attempt, as seen
+    through the configured trusted proxies. Older events keep NULL.
+
+    ALTER TABLE ADD COLUMN rewrites no rows and fires no triggers, so the
+    append-only protection of audit_events is not touched.
+    """
+
+    if "must_change_password" not in _columns(conn, "users"):
+        conn.execute("""
+            ALTER TABLE users
+            ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0
+            CHECK (must_change_password IN (0, 1))
+        """)
+
+    if "source_address" not in _columns(conn, "audit_events"):
+        conn.execute(
+            "ALTER TABLE audit_events ADD COLUMN source_address TEXT"
+        )
+
+
+# ---------------------------------------------------
 # MIGRATION REGISTRY
 # ---------------------------------------------------
 
@@ -532,6 +566,8 @@ MIGRATIONS = (
               _migration_7_stable_usernames),
     Migration(8, "Add append-only administrative audit events",
               _migration_8_audit_events),
+    Migration(9, "Add forced password changes and login event addresses",
+              _migration_9_account_policy),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1].version
@@ -562,6 +598,7 @@ _REQUIRED_COLUMNS = {
     "users": {
         "id": False, "username": True, "password_hash": True, "role": True,
         "is_active": True, "session_version": True,
+        "must_change_password": True,
     },
     "tickets": {
         "id": False, "title": True, "description": True,
@@ -585,6 +622,7 @@ _REQUIRED_COLUMNS = {
         "id": False, "created_at": True, "actor_user_id": False,
         "actor": True, "action": True, "target_user_id": False,
         "target_username": False, "old_value": False, "new_value": False,
+        "source_address": False,
     },
 }
 
@@ -711,6 +749,11 @@ def find_schema_problems(conn):
             "AND SESSION_VERSION >= 1)"
         ) not in users_sql:
             problems.append("users.session_version is missing its CHECK")
+
+        if "must_change_password" in _columns(conn, "users") and (
+            "CHECK(MUST_CHANGE_PASSWORD IN(0, 1))" not in users_sql
+        ):
+            problems.append("users.must_change_password is missing its CHECK")
 
         trigger_sql = _object_sql(conn, "trigger", _SESSION_TRIGGER)
 

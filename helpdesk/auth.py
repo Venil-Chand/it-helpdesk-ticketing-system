@@ -54,6 +54,13 @@ ADMIN_ROLE = "admin"
 # must keep working even while the database is unavailable.
 ACCOUNT_CHECK_EXEMPT_ENDPOINTS = frozenset({"static", "auth.logout"})
 
+# The only pages an account that must change its password may use
+PASSWORD_CHANGE_ALLOWED_ENDPOINTS = frozenset({
+    "account.change_password",
+    "auth.logout",
+    "static",
+})
+
 # Values the current session format stores, and older ones it replaces
 SESSION_CLAIMS = ("user_id", "session_version", "issued_at")
 LEGACY_SESSION_KEYS = ("username", "role")
@@ -72,6 +79,7 @@ class CurrentUser:
     id: int
     username: str
     role: str
+    must_change_password: bool = False
 
     @property
     def is_staff(self):
@@ -189,10 +197,42 @@ def load_current_user():
     g.user = CurrentUser(
         id=account["id"],
         username=account["username"],
-        role=account["role"]
+        role=account["role"],
+        must_change_password=account["must_change_password"] == 1
     )
 
     return None
+
+
+def require_password_change():
+    """
+    Send an account with a password chosen by someone else to Change
+    password, and nowhere else, until it chooses its own.
+
+    create_app() registers this right after load_current_user, so the flag
+    comes from the database on every request. Only the change-password
+    page, logout and static files stay available; every other GET or POST
+    is redirected without running.
+    """
+
+    user = g.get("user")
+
+    if user is None or not user.must_change_password:
+        return None
+
+    if (
+        request.endpoint is None
+        or request.endpoint in PASSWORD_CHANGE_ALLOWED_ENDPOINTS
+    ):
+        return None
+
+    if request.method == "GET":
+        flash(
+            "You must choose a new password before continuing.",
+            "warning"
+        )
+
+    return redirect(url_for("account.change_password"))
 
 
 # ---------------------------------------------------
@@ -339,6 +379,14 @@ def login():
             session["user_id"] = user["id"]
             session["session_version"] = user["session_version"]
             session["issued_at"] = clock.current_time()
+
+            if user["must_change_password"] == 1:
+                flash(
+                    "Your password was set by an administrator. Choose a "
+                    "new password before continuing.",
+                    "warning"
+                )
+                return redirect(url_for("account.change_password"))
 
             flash(
                 f"Welcome back, {user['username']}!",

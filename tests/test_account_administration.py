@@ -140,6 +140,8 @@ class TestCreateAccount(AccountTestCase):
         carol = self.account("carol")
         self.assertEqual((carol[2], carol[3]), ("technician", 1))
         self.assertTrue(self.can_log_in("carol", NEW_PASSWORD))
+        # The administrator chose this password, so carol must replace it
+        self.must_change_password_on_login("carol", NEW_PASSWORD)
 
         self.assertEqual(self.audit(), [(
             self.ids["root"], "root", "account_created", carol[0], "carol",
@@ -360,6 +362,7 @@ class TestPasswordReset(AccountTestCase):
         self.assert_signed_out(bob)
         self.assertFalse(self.can_log_in("bob", PASSWORD))
         self.assertTrue(self.can_log_in("bob", NEW_PASSWORD))
+        self.must_change_password_on_login("bob", NEW_PASSWORD)
         self.assertEqual(self.audit(), [(
             self.ids["root"], "root", "password_reset", self.ids["bob"],
             "bob", None, None

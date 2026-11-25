@@ -89,6 +89,8 @@ EXPECTED_BEFORE_REQUEST = [
     "csrf_protect",
     "_check_request_limit",
     "load_current_user",
+    # Must run after load_current_user, which it depends on
+    "require_password_change",
 ]
 
 NO_CSRF = {"WTF_CSRF_ENABLED": False}
@@ -919,13 +921,13 @@ class CliThroughFactoryTests(unittest.TestCase):
         self.assertIn("Every assigned ticket has an eligible assignee",
                       audit.output)
 
-    def test_schema_version_eight_is_current(self):
-        self.assertEqual(migrations.SCHEMA_VERSION, 8)
+    def test_schema_version_nine_is_current(self):
+        self.assertEqual(migrations.SCHEMA_VERSION, 9)
 
         self.run_command("init-db")
         status = migrations.schema_status(self.db_path)
 
-        self.assertEqual((status.version, status.state), (8, "current"))
+        self.assertEqual((status.version, status.state), (9, "current"))
 
     def test_init_db_backup_option_still_works(self):
         self.run_command("init-db")

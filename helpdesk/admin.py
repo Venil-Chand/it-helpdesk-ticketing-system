@@ -97,7 +97,8 @@ def new_user():
                 flash(
                     f"Account {username} created with role {role}. Give "
                     "the user their password through a separate, trusted "
-                    "channel.",
+                    "channel; they must choose a new one when they first "
+                    "sign in.",
                     "success"
                 )
                 return _back_to_users()
@@ -222,7 +223,7 @@ def reset_password(user_id):
     flash(
         f"Password for {username} reset, and all of its sessions ended. "
         "Give the user the new password through a separate, trusted "
-        "channel.",
+        "channel; they must choose a new one when they next sign in.",
         "success"
     )
 

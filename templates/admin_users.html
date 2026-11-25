@@ -75,6 +75,9 @@
             {% else %}
               <span class="badge bg-secondary">Deactivated</span>
             {% endif %}
+            {% if account['must_change_password'] == 1 %}
+              <span class="badge bg-warning text-dark">Must change password</span>
+            {% endif %}
           </td>
 
           <td class="text-end">{{ account['open_assigned'] }}</td>
