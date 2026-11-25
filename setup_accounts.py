@@ -4,7 +4,6 @@
 # ---------------------------------------------------
 
 from getpass import getpass
-from secrets import compare_digest
 
 from werkzeug.security import (
     generate_password_hash,
@@ -103,25 +102,14 @@ def setup_account():
         new_password = getpass("Enter new password: ")
         confirm_password = getpass("Confirm new password: ")
 
-        # Require a strong password
-        if len(new_password) < validation.MIN_PASSWORD_LENGTH:
-            print(
-                "Password must contain at least "
-                f"{validation.MIN_PASSWORD_LENGTH} characters."
-            )
-            return
+        # The same password rules as the web pages: length, typed twice,
+        # and not common, breached, the username or a simple pattern
+        problem = validation.new_password_problem(
+            new_password, confirm_password, username=username
+        )
 
-        # Longer passwords would be refused at the login page
-        if len(new_password) > validation.MAX_PASSWORD_LENGTH:
-            print(
-                "Password must contain at most "
-                f"{validation.MAX_PASSWORD_LENGTH} characters."
-            )
-            return
-
-        # Check that both passwords match
-        if not compare_digest(new_password, confirm_password):
-            print("Passwords do not match.")
+        if problem:
+            print(problem)
             return
 
         # Prevent reuse of the current password

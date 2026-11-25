@@ -152,8 +152,8 @@ class TestSetupScriptIsAudited(AuditMigrationTestCase):
         db.init_db()
 
     def test_first_admin_and_password_change_are_recorded(self):
-        first = "first-admin-passphrase-123"
-        second = "second-admin-passphrase-456"
+        first = "first-owner-passphrase-123"
+        second = "second-owner-passphrase-456"
 
         with patch("setup_accounts.getpass", side_effect=[first, first]):
             setup_account()

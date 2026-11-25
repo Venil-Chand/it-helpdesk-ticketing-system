@@ -621,7 +621,9 @@ class TestUsernameStability(AssignmentTestCase):
         db.create_ticket("Old", "From the previous admin", "Low", "admin")
         self.sql("DELETE FROM users")
 
-        with patch("setup_accounts.getpass", return_value="x" * 20), \
+        # A valid password, so the reserved name is what gets refused
+        with patch("setup_accounts.getpass",
+                   return_value="quiet-orbit-lantern-58"), \
                 patch("builtins.print") as printed:
             result = setup_accounts.setup_account()
 

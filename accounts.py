@@ -271,7 +271,8 @@ def create_account(actor_id, username, role, password):
     problem = (
         validation.username_problem(username)
         or (None if role in ROLES else "Choose a valid role.")
-        or validation.new_password_problem(password, password)
+        or validation.new_password_problem(password, password,
+                                           username=username)
     )
 
     if problem:
@@ -421,7 +422,16 @@ def reset_password(actor_id, target_id, password):
     Returns the account's username.
     """
 
-    problem = validation.new_password_problem(password, password)
+    # Read first so the password can be compared with the username before
+    # the slow hash; usernames cannot change, so this stays true below
+    target = get_account(target_id)
+
+    if target is None:
+        raise AccountNotFound()
+
+    problem = validation.new_password_problem(
+        password, password, username=target["username"]
+    )
 
     if problem:
         raise AccountError(problem)
@@ -474,11 +484,6 @@ def change_own_password(user_id, session_version, current_password,
     change happened in between, nothing is saved.
     """
 
-    problem = validation.new_password_problem(new_password, new_password)
-
-    if problem:
-        raise AccountError(problem)
-
     conn = db.get_db()
 
     try:
@@ -507,6 +512,13 @@ def change_own_password(user_id, session_version, current_password,
                                 current_password or "")
     ):
         raise AccountError("Current password is incorrect.")
+
+    problem = validation.new_password_problem(
+        new_password, new_password, username=account["username"]
+    )
+
+    if problem:
+        raise AccountError(problem)
 
     if check_password_hash(account["password_hash"], new_password):
         raise AccountError("New password must differ from the old password.")
