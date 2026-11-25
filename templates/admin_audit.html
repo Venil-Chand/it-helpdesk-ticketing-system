@@ -8,6 +8,9 @@
   'account_reactivated': 'Account reactivated',
   'password_reset': 'Password reset by administrator',
   'password_changed': 'Password changed by owner',
+  'login_succeeded': 'Signed in',
+  'login_failed': 'Sign-in failed',
+  'audit_archived': 'Audit events archived',
 } %}
 
 {% block content %}
@@ -23,9 +26,22 @@
 </div>
 
 <p class="text-muted small">
-  The {{ max_events }} most recent account administration events, newest
-  first. Events cannot be edited or deleted. Passwords are never recorded.
+  The {{ max_events }} most recent events, newest first. Events cannot be
+  edited or deleted. Passwords and session cookies are never recorded, and
+  usernames that match no account are not stored.
 </p>
+
+<ul class="nav nav-pills mb-3 small" id="audit-filter">
+  <li class="nav-item">
+    <a class="nav-link {% if not kind %}active{% endif %}" href="{{ url_for('admin.audit_log') }}">All</a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link {% if kind == 'accounts' %}active{% endif %}" href="{{ url_for('admin.audit_log', kind='accounts') }}">Account changes</a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link {% if kind == 'logins' %}active{% endif %}" href="{{ url_for('admin.audit_log', kind='logins') }}">Sign-ins</a>
+  </li>
+</ul>
 
 <div class="card shadow-sm border-0">
   <div class="table-responsive">
@@ -37,6 +53,7 @@
           <th scope="col">Action</th>
           <th scope="col">Account</th>
           <th scope="col">Change</th>
+          <th scope="col">From</th>
         </tr>
       </thead>
       <tbody>
@@ -53,10 +70,11 @@
               {{ event['new_value'] or '' }}
             {% endif %}
           </td>
+          <td class="text-nowrap small">{{ event['source_address'] or '' }}</td>
         </tr>
         {% else %}
         <tr>
-          <td colspan="5" class="text-center text-muted py-4">No audit events yet.</td>
+          <td colspan="6" class="text-center text-muted py-4">No audit events yet.</td>
         </tr>
         {% endfor %}
       </tbody>

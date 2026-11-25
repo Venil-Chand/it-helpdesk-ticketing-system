@@ -58,9 +58,20 @@ class TestUpgradeToVersionEight(AuditMigrationTestCase):
 
         result = migrations.migrate(self.path)
 
-        self.assertEqual([m.version for m in result.applied], [8])
-        self.assertEqual(SCHEMA_VERSION, 8)
-        self.assertEqual(self.snapshot(), before)
+        self.assertEqual([m.version for m in result.applied], [8, 9])
+        self.assertEqual(result.final_version, SCHEMA_VERSION)
+
+        # Every original column of every row is unchanged. Migration 9
+        # only appends users.must_change_password, 0 for existing accounts.
+        after = self.snapshot()
+        for table, rows in before.items():
+            with self.subTest(table=table):
+                width = len(rows[0]) if rows else 0
+                self.assertEqual([row[:width] for row in after[table]], rows)
+        self.assertEqual(
+            self.sql("SELECT DISTINCT must_change_password FROM users"),
+            [(0,)]
+        )
         # No invented events for changes made before the migration
         self.assertEqual(self.sql("SELECT COUNT(*) FROM audit_events"),
                          [(0,)])
@@ -88,7 +99,7 @@ class TestUpgradeToVersionEight(AuditMigrationTestCase):
         status = migrations.schema_status(self.path)
 
         self.assertEqual(status.state, "outdated")
-        self.assertEqual([m.version for m in status.pending], [8])
+        self.assertEqual([m.version for m in status.pending], [8, 9])
 
 
 class TestAuditEventsAreAppendOnly(AuditMigrationTestCase):
@@ -152,8 +163,8 @@ class TestSetupScriptIsAudited(AuditMigrationTestCase):
         db.init_db()
 
     def test_first_admin_and_password_change_are_recorded(self):
-        first = "first-admin-passphrase-123"
-        second = "second-admin-passphrase-456"
+        first = "first-owner-passphrase-123"
+        second = "second-owner-passphrase-456"
 
         with patch("setup_accounts.getpass", side_effect=[first, first]):
             setup_account()

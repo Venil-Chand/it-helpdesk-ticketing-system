@@ -1096,7 +1096,7 @@ def get_user(username):
         user = conn.execute(
             """
             SELECT id, username, password_hash, role, is_active,
-                   session_version
+                   session_version, must_change_password
             FROM users
             WHERE username = ?
             """,
@@ -1122,7 +1122,8 @@ def get_user_by_id(user_id):
     try:
         return conn.execute(
             """
-            SELECT id, username, role, is_active, session_version
+            SELECT id, username, role, is_active, session_version,
+                   must_change_password
             FROM users
             WHERE id = ?
             """,

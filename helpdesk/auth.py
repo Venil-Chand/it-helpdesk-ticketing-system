@@ -10,6 +10,8 @@ its views: load_current_user() (run before every request by create_app),
 and the login_required and staff_required decorators.
 """
 
+import functools
+import secrets
 import sqlite3
 from dataclasses import dataclass
 from datetime import timedelta
@@ -27,8 +29,9 @@ from flask import (
     session,
     url_for,
 )
-from werkzeug.security import check_password_hash
+from werkzeug.security import check_password_hash, generate_password_hash
 
+import accounts
 import database as db
 import validation
 
@@ -54,6 +57,13 @@ ADMIN_ROLE = "admin"
 # must keep working even while the database is unavailable.
 ACCOUNT_CHECK_EXEMPT_ENDPOINTS = frozenset({"static", "auth.logout"})
 
+# The only pages an account that must change its password may use
+PASSWORD_CHANGE_ALLOWED_ENDPOINTS = frozenset({
+    "account.change_password",
+    "auth.logout",
+    "static",
+})
+
 # Values the current session format stores, and older ones it replaces
 SESSION_CLAIMS = ("user_id", "session_version", "issued_at")
 LEGACY_SESSION_KEYS = ("username", "role")
@@ -72,6 +82,7 @@ class CurrentUser:
     id: int
     username: str
     role: str
+    must_change_password: bool = False
 
     @property
     def is_staff(self):
@@ -189,10 +200,42 @@ def load_current_user():
     g.user = CurrentUser(
         id=account["id"],
         username=account["username"],
-        role=account["role"]
+        role=account["role"],
+        must_change_password=account["must_change_password"] == 1
     )
 
     return None
+
+
+def require_password_change():
+    """
+    Send an account with a password chosen by someone else to Change
+    password, and nowhere else, until it chooses its own.
+
+    create_app() registers this right after load_current_user, so the flag
+    comes from the database on every request. Only the change-password
+    page, logout and static files stay available; every other GET or POST
+    is redirected without running.
+    """
+
+    user = g.get("user")
+
+    if user is None or not user.must_change_password:
+        return None
+
+    if (
+        request.endpoint is None
+        or request.endpoint in PASSWORD_CHANGE_ALLOWED_ENDPOINTS
+    ):
+        return None
+
+    if request.method == "GET":
+        flash(
+            "You must choose a new password before continuing.",
+            "warning"
+        )
+
+    return redirect(url_for("account.change_password"))
 
 
 # ---------------------------------------------------
@@ -289,8 +332,38 @@ def admin_required(view):
 # LOGIN
 # ---------------------------------------------------
 
+@functools.lru_cache(maxsize=1)
+def _dummy_password_hash():
+    """
+    A hash no password matches, made with the default (current) method.
+
+    Checked when the username does not exist, so that an unknown username
+    costs the same slow hash as a wrong password.
+    """
+
+    return generate_password_hash(secrets.token_urlsafe(32))
+
+
+def _record_failed_login(account, reason):
+    """Record a failed sign-in; a database problem must not change the answer."""
+
+    try:
+        accounts.record_login_event(
+            succeeded=False,
+            account=account,
+            reason=reason,
+            source_address=request.remote_addr
+        )
+    except sqlite3.Error as error:
+        current_app.logger.error(
+            "Could not record a failed login: %s", type(error).__name__
+        )
+
+
 # The "5 per minute" limit on POST is attached by create_app(), through
 # security.apply_route_limits(), so each application uses its own limiter.
+# It runs before this view, so attempts over the limit are never processed
+# or recorded, and recording can never be used to get round the limit.
 @bp.route("/login", methods=["GET", "POST"])
 def login():
     """Authenticate users with login rate limiting."""
@@ -322,12 +395,26 @@ def login():
         except sqlite3.Error as error:
             return authentication_unavailable(error)
 
-        # Verify the password hash first, so a deactivated account gets
-        # exactly the same response as a wrong password
-        if user and check_password_hash(
-            user["password_hash"],
+        # Always run the slow hash, against a dummy when the username does
+        # not exist, so response time does not reveal which names exist.
+        # A deactivated account gets exactly the same response as a wrong
+        # password.
+        password_ok = credentials_fit and check_password_hash(
+            user["password_hash"] if user else _dummy_password_hash(),
             password
-        ) and user["is_active"] == 1:
+        ) and user is not None
+
+        if password_ok and user["is_active"] == 1:
+
+            # No sign-in without its audit record
+            try:
+                accounts.record_login_event(
+                    succeeded=True,
+                    account=user,
+                    source_address=request.remote_addr
+                )
+            except sqlite3.Error as error:
+                return authentication_unavailable(error)
 
             # Clear previous session data
             session.clear()
@@ -340,12 +427,29 @@ def login():
             session["session_version"] = user["session_version"]
             session["issued_at"] = clock.current_time()
 
+            if user["must_change_password"] == 1:
+                flash(
+                    "Your password was set by an administrator. Choose a "
+                    "new password before continuing.",
+                    "warning"
+                )
+                return redirect(url_for("account.change_password"))
+
             flash(
                 f"Welcome back, {user['username']}!",
                 "success"
             )
 
             return redirect(url_for("dashboard.index"))
+
+        if user is None:
+            reason = accounts.LOGIN_UNKNOWN_ACCOUNT
+        elif not password_ok:
+            reason = accounts.LOGIN_WRONG_PASSWORD
+        else:
+            reason = accounts.LOGIN_ACCOUNT_DEACTIVATED
+
+        _record_failed_login(user, reason)
 
         flash(
             "Invalid username or password.",

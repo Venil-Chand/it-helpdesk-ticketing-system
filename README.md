@@ -48,9 +48,13 @@ The project demonstrates Python programming, web development, relational databas
 - **Account setup** — create the first administrator using a terminal script
 - **Web account administration** — administrators create accounts, change roles, deactivate and reactivate accounts and reset passwords in the browser; accounts are never deleted
 - **Self-service password change** — every user can change their own password after entering the current one; other sessions end
-- **Administrative audit log** — an append-only record of every account change, who made it and when, with no passwords recorded
+- **Administrative audit log** — an append-only record of every account change and sign-in attempt, who made it and when, with no passwords recorded; filterable by account changes or sign-ins
+- **Password policy** — at least 16 characters, up to 1,024, any characters, with an offline check against 77,339 common and breached passwords; no complexity rules or expiry
+- **Forced password changes** — a password set by an administrator must be replaced by its owner before anything else can be done
+- **Administrator recovery** — `flask --app app reset-password USERNAME` recovers a lost password, including the last administrator's, from the server's command line
+- **Audit archiving** — copy events older than the retention period to a verified, checksummed archive without deleting anything
 - **Versioned database migrations** — explicit `flask --app app init-db` and read-only `db-status` commands; upgrades run in one transaction and never seed accounts
-- **Automated tests** — 957 tests covering the application factory, authentication, authorization, CSRF, account administration, password changes, audit events, search, pagination, CSV export, history, assignment rules, SLA policy and monitoring, and database migrations
+- **Automated tests** — 1,062 tests covering the application factory, password policy, forced password changes, sign-in auditing, administrator recovery, audit archiving, authentication, authorization, CSRF, account administration, password changes, audit events, search, pagination, CSV export, history, assignment rules, SLA policy and monitoring, and database migrations
 
 ---
 
@@ -126,7 +130,7 @@ python setup_accounts.py
 
 If no accounts exist, the program creates the initial `admin` account after prompting for a password.
 
-Passwords must contain at least 16 characters.
+Passwords must contain at least 16 characters and must not be a common or breached password; see [Password policy](#password-policy).
 
 No fixed default password is created during database initialization.
 
@@ -182,7 +186,7 @@ The script checks the current password before updating the stored password hash.
 ### Password security
 
 - Passwords are entered using Python's `getpass` module.
-- New passwords must contain at least 16 characters.
+- New passwords follow the [Password policy](#password-policy): 16 to 1,024 characters, not common or breached, not containing the username.
 - Werkzeug hashes passwords before they are stored in SQLite.
 - The new password cannot match the existing password.
 - SQL queries use parameter placeholders to reduce SQL injection risk.
@@ -202,12 +206,12 @@ Administrators manage accounts at **Users** (`/admin/users`) in the navigation b
 
 | Task | How | Effect on sessions |
 |---|---|---|
-| Create an account | **New account**: username, role and an initial password (at least 16 characters, typed twice) | — |
+| Create an account | **New account**: username, role and an initial password ([Password policy](#password-policy), typed twice). The user must replace it at first sign-in. | — |
 | Change a role | Choose the role in the account's row and press **Save** | Applies on the account's next request |
 | Deactivate an account | **Deactivate** (asks for confirmation) | Signs the account out everywhere at once |
 | Reactivate an account | **Reactivate** | Old sessions stay invalid; the user signs in again |
-| Reset a forgotten password | **Reset password**, enter the new password twice | Signs the account out everywhere at once |
-| Review changes | **Audit log** (`/admin/audit`): the 200 most recent events | — |
+| Reset a forgotten password | **Reset password**, enter the new password twice. The user must replace it at next sign-in. | Signs the account out everywhere at once |
+| Review changes | **Audit log** (`/admin/audit`): the 200 most recent events, or only **Account changes** or **Sign-ins** | — |
 
 Every user can change their own password at **Password** (`/account/password`). The current password is required, the form is limited to 5 attempts per minute, and every other session for the account ends. The browser that made the change stays signed in.
 
@@ -224,17 +228,106 @@ The rules live in `accounts.py` and are checked inside the same database transac
 
 ### Audit events
 
-`audit_events` (migration 8) records `account_created`, `role_changed`, `account_deactivated`, `account_reactivated`, `password_reset` and `password_changed`, with the actor, the target account (id and username), the old and new value where relevant, and the time in UTC. Database triggers refuse any `UPDATE` or `DELETE` of an event. Changes made by `setup_accounts.py` are recorded with the actor `setup_accounts.py`. Changes made directly with SQL outside the application are not recorded.
+`audit_events` (migration 8, extended by migration 9) records:
 
-### Account policy decisions still open
+- **account changes:** `account_created`, `role_changed`, `account_deactivated`, `account_reactivated`, `password_reset` and `password_changed`
+- **sign-ins:** `login_succeeded` and `login_failed`
+- **archiving:** `audit_archived`
 
-These need a decision from the service owner. Until then, the behaviour above applies.
+Each event holds the actor, the target account (id and username), the old and new value where relevant, the time in UTC and, for sign-ins, the client address.
 
-1. **Forced password change.** Should a password set by an administrator (new account or reset) have to be changed at first sign-in? Not enforced today.
-2. **Password composition and expiry.** Only a 16-character minimum is enforced. Breached-password checks, complexity rules or expiry are not.
-3. **Sign-in events.** Successful and failed logins are not written to the audit log.
-4. **Audit retention.** Events are kept forever; there is no export or archiving.
-5. **Multi-factor authentication** is not available.
+Database triggers refuse any `UPDATE` or `DELETE` of an event. Changes made by `setup_accounts.py` are recorded with the actor `setup_accounts.py`, and those made by `flask reset-password` with `cli:<operating-system account>`. Changes made directly with SQL outside the application are not recorded.
+
+### Forced password changes
+
+A password chosen by someone else must be replaced by its owner. This covers an administrator creating an account, an administrator resetting a password, and `flask reset-password`. Migration 9 adds `users.must_change_password`; every existing account starts at 0, so nobody is disrupted.
+
+While the flag is set, the account can only use **Change password** and **Logout**. Every other page, GET or POST, redirects to Change password without running. The flag is read from the database on every request, after the session check, so expiry, revocation, deactivation, CSRF and the rate limits all still apply. The new password must differ from the temporary one. The change-password form includes a hidden username field, so password managers save the new password against the right account.
+
+### Password policy
+
+The same rules apply everywhere a password is set: the web pages, account administration, `setup_accounts.py` and `flask reset-password` (`validation.new_password_problem`).
+
+| Rule | Value |
+|---|---|
+| Minimum length | 16 characters (unchanged from earlier versions) |
+| Maximum length | 1,024 characters. That is well over the 64 characters password managers usually generate, and short enough to hash safely. |
+| Characters | Any, including spaces and non-English letters. Length counts characters, not bytes. |
+| Common and breached passwords | Refused, using an offline list of 77,339 entries (see [`security_data/README.md`](security_data/README.md) for sources, checksums and limits). Case is ignored. |
+| Username | A password containing the account's username (4 or more characters) is refused |
+| Simple patterns | Short repeated blocks (`abcabcabc…`) and straight sequences (`abcdefgh…`) are refused |
+| Complexity rules | None, deliberately. No required digits, symbols or capitals. |
+| Expiry | None, deliberately. Change a password when it may have been exposed. |
+
+Submitted passwords are never sent to any external service. If the blocklist file is missing, setting a password fails with an error instead of silently accepting everything.
+
+### Sign-in auditing
+
+Every attempt that reaches the login page is recorded as `login_succeeded` or `login_failed`, with the reason (`wrong password`, `account deactivated` or `unknown account`) and the client address. Client addresses come through the configured trusted proxies only; forged `X-Forwarded-For` headers are ignored.
+
+- **Never stored:** passwords, session cookies, or a username that matches no account (it may be a password typed into the wrong box).
+- **Rate limit first:** attempts over the limit (5 per minute) are refused before the login view runs, so they are neither processed nor recorded, and recording cannot be used to get round the limit.
+- **Database failure:** if a *successful* sign-in cannot be recorded, nobody is signed in and the page returns 503. A *failed* attempt that cannot be recorded still gets the normal "Invalid username or password" answer, and only the error type is logged.
+- **Same answer:** unknown usernames, wrong passwords and deactivated accounts get identical responses.
+
+**Login timing.** An unknown username is now checked against a dummy password hash of the current method (scrypt), so it takes about as long as a wrong password and response time no longer reveals which usernames exist. Some smaller differences remain:
+
+- an account whose stored hash uses an older, cheaper method answers at that method's speed until its password is next changed
+- the database lookup itself is not constant-time
+- oversized credentials are refused without hashing
+
+These are much smaller than the gap that existed before, and they cannot be measured faster than the rate limit allows.
+
+High volumes of failed sign-ins from many addresses each add a row to the audit table. The per-address rate limit bounds this, but the limit is held in memory per process until shared rate-limit storage arrives in Package 3.
+
+### Administrator recovery
+
+If a password is lost, including the only administrator's, recover the account from the server:
+
+```bash
+flask --app app reset-password USERNAME
+```
+
+- **Hidden prompt only:** the new password is typed twice at a hidden prompt. It is never accepted as an argument, option, environment variable or piped input, and the command refuses to run without an interactive terminal.
+- **Effect:** every session of the account ends, the owner must choose a new password at next sign-in, and an audit event names the operating-system account that ran the command. The reset and its audit event are saved together or not at all.
+- **What it never does:** it refuses deactivated accounts (reactivate first; it never unlocks anything), and it never changes roles.
+
+Give the temporary password to its owner through a trusted channel, then make sure they sign in and replace it.
+
+**Access controls this command relies on.** The command has no password check of its own: being able to run it on the server *is* the authorisation. Protect that access:
+
+- **Ownership:** run the application as a dedicated, non-login service account (for example `helpdesk`) that owns `helpdesk.db`. The database file is `0600` and its directory `0700`, so no other account can read or write it.
+- **Who can run it:** only named administrators, through `sudo -u helpdesk flask --app app reset-password …`. Use personal SSH accounts with key-only authentication; no shared logins and no direct root login.
+- **The record:** the audit event records the real user id the command ran as and, under sudo, the invoking account. The system's sudo/auth log (`/var/log/auth.log` or `journalctl`) is the authoritative record of who ran the command; keep it, and review it alongside the audit log.
+- **Backups:** anyone who can read a database backup can attack the password hashes offline, so restrict and encrypt backups the same way.
+
+### Audit retention
+
+The provisional policy is to keep audit events for **12 months**, pending the final privacy policy. The append-only triggers stay in place, so nothing is deleted. Instead, old events can be copied to a verified archive:
+
+```bash
+flask --app app audit-archive --dry-run                     # how many events are older than 12 months
+flask --app app audit-archive --to /secure/audit-2025.jsonl # private archive + checksummed manifest
+flask --app app audit-verify-archive /secure/audit-2025.jsonl
+```
+
+Removing archived events from the database is **designed but not implemented**; it needs an approved design first. The design, its safeguards and the open decisions are in [`docs/AUDIT_RETENTION.md`](docs/AUDIT_RETENTION.md).
+
+### Account policy decisions
+
+Decided for version 1.0 and implemented:
+
+- forced password changes
+- the password policy
+- sign-in auditing
+- 12-month provisional retention with archiving
+
+Still open:
+
+1. **Final retention and privacy policy:** the live and archive retention periods, and whether archived events are ever removed from the database ([`docs/AUDIT_RETENTION.md`](docs/AUDIT_RETENTION.md)).
+2. **Online breached-password checks** (for example the Have I Been Pwned range API): not used, and would need approval because it contacts an external service.
+3. **Account lock-out after repeated failures:** not implemented. The per-address rate limit applies instead, and a lock-out policy would let anyone lock out a known username.
+4. **Multi-factor authentication:** not available.
 
 ---
 
@@ -254,7 +347,8 @@ The database structure is defined in `migrations.py` as a numbered list of **mig
 | 5 | Account activation | `users.is_active`; existing accounts stay active |
 | 6 | Session revocation | `users.session_version` and the `users_revoke_sessions` trigger |
 | 7 | Stable usernames | `users_username_immutable` and `users_no_historical_username_reuse` triggers; no rows changed |
-| 8 | Audit events | Append-only `audit_events`, its index and its two protective triggers; no existing rows changed and no events invented for past changes (current version) |
+| 8 | Audit events | Append-only `audit_events`, its index and its two protective triggers; no existing rows changed and no events invented for past changes |
+| 9 | Account policy | `users.must_change_password` (0 for every existing account) and `audit_events.source_address` (NULL for older events); no rows changed, append-only triggers untouched (current version) |
 
 The version is stored inside the database file itself, using SQLite's built-in `PRAGMA user_version` header field. No extra table is needed.
 
@@ -266,8 +360,11 @@ The version is stored inside the database file itself, using SQLite's built-in `
 | `flask --app app init-db` | Creates a new database, or applies pending migrations in order, then reports the final version. Exits with status 1 if anything fails. | Yes |
 | `flask --app app init-db --backup-to FILE` | Writes a verified backup to a new `FILE` first. If the backup fails, no migration is attempted. | Yes |
 | `flask --app app assignment-audit` | Lists tickets assigned to an account that could not be chosen today (missing, deactivated or wrong role). Exits with status 1 if any are found. | Never. The file is opened read-only. |
+| `flask --app app reset-password USERNAME` | Sets a temporary password typed at a hidden prompt, ends every session and forces a change at next sign-in. See [Administrator recovery](#administrator-recovery). | Yes (one account, audited) |
+| `flask --app app audit-archive --to FILE` | Copies audit events older than the retention period to a private archive with a manifest. `--dry-run` only counts. | Adds one `audit_archived` event; deletes nothing |
+| `flask --app app audit-verify-archive FILE` | Checks an archive against its manifest and the database. Exits with status 1 on any problem. | Never |
 
-Neither command creates user accounts or prints passwords, password hashes, ticket contents or `.env` values.
+None of these commands creates user accounts or prints passwords, password hashes, ticket contents or `.env` values.
 
 ### Initialising a fresh database
 
@@ -411,10 +508,12 @@ it-helpdesk-ticketing-system/
 │   ├── account.py               (blueprint "account": change your password)
 │   ├── admin.py                 (blueprint "admin": accounts, audit log)
 │   ├── ticket_filters.py        (filters shared by dashboard and export)
-│   ├── cli.py                   (db-status, init-db, assignment-audit)
+│   ├── cli.py                   (db-status, init-db, assignment-audit,
+│   │                             reset-password, audit-archive, audit-verify-archive)
 │   └── clock.py                 (the one clock every route reads)
 ├── database.py
 ├── accounts.py                  (account administration rules and audit events)
+├── audit_archive.py             (audit archive export and verification)
 ├── sla.py
 ├── sla_storage.py
 ├── csv_export.py
@@ -423,6 +522,13 @@ it-helpdesk-ticketing-system/
 ├── security_config.py
 ├── validation.py
 ├── proxy_trust.py
+├── scripts/
+│   └── build_password_blocklist.py
+├── security_data/
+│   ├── README.md                (blocklist sources, checksums and limits)
+│   └── common_passwords.txt.gz
+├── docs/
+│   └── AUDIT_RETENTION.md
 ├── requirements.txt
 ├── .env.example
 ├── .gitignore
@@ -432,6 +538,11 @@ it-helpdesk-ticketing-system/
 │   ├── test_account_administration.py
 │   ├── test_password_change.py
 │   ├── test_audit_migration.py
+│   ├── test_password_policy.py
+│   ├── test_forced_password_change.py
+│   ├── test_login_audit.py
+│   ├── test_reset_password_cli.py
+│   ├── test_audit_archive.py
 │   ├── account_helpers.py       (shared fixture for account tests)
 │   ├── test_assignment_validation.py
 │   ├── test_authentication.py
@@ -491,9 +602,10 @@ it-helpdesk-ticketing-system/
 | `accounts.py` | Account administration rules, password changes and the audit log, used by the admin and account blueprints |
 | `migrations.py` | Versioned, transaction-safe schema migrations (replaces the retired `migrate.py`) |
 | `security_config.py` | Validates environment settings and defines cookies, headers and the CSP |
-| `validation.py` | Server-side text and request size limits |
+| `validation.py` | Server-side text and request size limits, and the password policy |
+| `audit_archive.py` | Copies old audit events to a checksummed archive and verifies it; never deletes |
 | `proxy_trust.py` | Believes forwarded headers only from configured proxies |
-| `tests/` | 957 automated tests covering the application factory, auth, CSRF, ownership, search, pagination, CSV export, history, assignment, SLA, migrations and production security |
+| `tests/` | 1,062 automated tests covering the application factory, account policy and recovery, auth, CSRF, ownership, search, pagination, CSV export, history, assignment, SLA, migrations and production security |
 
 The local `helpdesk.db` database and `.env` file are excluded from version control.
 
@@ -548,7 +660,7 @@ A *blueprint* is a group of related routes that can be plugged into an applicati
 | `tickets` | `helpdesk/tickets.py` | `/tickets/new`, `/tickets/<id>`, `/tickets/<id>/update`, `/tickets/<id>/comment` | Creating, viewing, updating, assigning and commenting on tickets, with the ownership rules |
 | `reports` | `helpdesk/reports.py` | `/tickets/export` | CSV export of the tickets the user may see |
 
-There is no administration blueprint because the helpdesk has no administration web pages yet. Administration runs through the command line (`flask --app app ...` and `setup_accounts.py`).
+Account administration has its own blueprints, `admin` (`/admin/users`, `/admin/audit`) and `account` (`/account/password`). Server-side recovery and maintenance run through the command line (`flask --app app ...` and `setup_accounts.py`).
 
 Blueprints keep each file focused on one job, so a change to the CSV export cannot accidentally break login, and each file is short enough to read in one sitting.
 
@@ -612,6 +724,10 @@ flask --app app db-status            # read-only; exit code 0 only if the schema
 flask --app app init-db              # create the database or apply pending migrations
 flask --app app init-db --backup-to backup.db   # verified backup first, then migrate
 flask --app app assignment-audit     # read-only; lists tickets with ineligible assignees
+flask --app app reset-password NAME  # recover a lost password (hidden prompt; server access only)
+flask --app app audit-archive --dry-run          # events older than 12 months
+flask --app app audit-archive --to FILE          # archive them (nothing is deleted)
+flask --app app audit-verify-archive FILE        # read-only; check an archive
 python setup_accounts.py             # first administrator and password changes
 ```
 
@@ -1153,7 +1269,7 @@ These tests build a separate application for each environment and use temporary 
 
 ## Automated Testing
 
-The project includes 957 automated tests using Python's built-in `unittest` framework. CI runs them on Python 3.13.
+The project includes 1,062 automated tests using Python's built-in `unittest` framework. CI runs them on Python 3.13.
 
 To run the full suite:
 
@@ -1176,6 +1292,11 @@ python -m unittest tests.test_search_route -v
 | `test_account_administration.py` | 36 | Admin-only access (403 for other roles, nothing changed), CSRF, creating accounts and every refused input, role changes, deactivation and reactivation ending sessions, password resets, self-protection, actor re-checked in the transaction, rollback, audit events and the audit page |
 | `test_password_change.py` | 14 | Current password required, this browser kept and other sessions ended, copied cookies refused, refused changes save nothing, concurrent changes detected, rate limit and CSRF |
 | `test_audit_migration.py` | 8 | Migration 8 keeps every row (including the historical invalid assignee), append-only triggers, schema check, `setup_accounts.py` audit events |
+| `test_password_policy.py` | 26 | 16 to 1,024 characters, any characters, no class rules, offline blocklist (checksum, normalisation, fails closed, case-insensitive), username and pattern rules, the deterministic list builder, and the policy applied by every way of setting a password |
+| `test_forced_password_change.py` | 23 | Who must change, every other page and form blocked, logout allowed, change restores access, copied cookies, expiry, deactivation, CSRF and rate limit while restricted, migration 9 upgrade, rollback and schema check |
+| `test_login_audit.py` | 16 | Success and failure records, no passwords, cookies or unknown usernames stored, forged forwarded headers ignored, identical responses and dummy hashing for unknown names, rate limit before recording, high-volume failures, audit filters, database failures |
+| `test_reset_password_cli.py` | 17 | Reset ends sessions, forces a change and is audited; lost last administrator recovered; no password arguments or piped input; deactivated, unknown, weak and mismatched refused; atomic rollback; race detection; operator name not spoofable |
+| `test_audit_archive.py` | 23 | Archive contents, private permissions, manifest and audit event, no overwrite, rollback and cleanup, triggers intact, verification of tampering and malformed lines, 12-month cutoff, CLI exit codes, no deletion command |
 | `test_authorization.py` | 3 | Only staff may update ticket status |
 | `test_session_revocation.py` | 106 | Copied-cookie replay, expiry, revocation, concurrency, legacy sessions, failures and migration 6 |
 | `test_database_authentication.py` | 80 | Real account checks: deleted, deactivated and demoted users, legacy sessions, ownership, migration 5, database failures, CSRF and rate limiting |
@@ -1232,7 +1353,12 @@ Coverage is still not exhaustive. Concurrent migration attempts are tested, but 
 | Hardcoded account creation | Removed; the legacy `migrate.py` seeding script has been deleted |
 | Database migrations | Versioned, transactional, run explicitly by an operator; never seed accounts |
 | Initial administrator setup | Implemented as a local script |
-| Password changing | Implemented as a local script |
+| Password changing | In the browser, by administrators, from `setup_accounts.py`, and `flask reset-password` for recovery |
+| Password policy | 16–1,024 characters; offline common/breached-password check; no complexity rules or expiry |
+| Forced password change | Required after an administrator sets a password; enforced on every request |
+| Sign-in auditing | Successes and failures recorded without secrets; rate limit applies first |
+| Username enumeration by timing | Mitigated with a dummy hash for unknown names; small residual differences documented |
+| Lost administrator credentials | Recoverable from the server shell only, audited |
 | CSRF protection | Implemented on all state-changing forms |
 | Login rate limiting | Implemented (5 attempts per minute) |
 | Database-backed authentication | Account, active status and role are checked in SQLite on every request |
@@ -1253,10 +1379,10 @@ Coverage is still not exhaustive. Concurrent migration attempts are tested, but 
 | Host validation | Implemented with `TRUSTED_HOSTS` |
 | Web-based account administration | Administrators only; rules re-checked in the database transaction; audited; tested |
 | Self-service password change | Current password required; rate limited; other sessions ended; tested |
-| Administrative audit log | Append-only (enforced by triggers); no passwords recorded |
+| Administrative audit log | Append-only (enforced by triggers); no passwords recorded; archiving without deletion |
 | Ticket assignment | Only active technicians and administrators; enforced in the database transaction; tested |
 | Username reuse | Usernames cannot be renamed or given to a new account while ticket records use them (migration 7) |
-| Automated security testing | 957 tests covering account administration, password changes, audit events, the application factory, auth, CSRF, ownership, search, pagination, export, history, assignment, SLA, migrations and production security |
+| Automated security testing | 1,062 tests covering password policy, forced changes, sign-in auditing, recovery, audit archiving, account administration, password changes, audit events, the application factory, auth, CSRF, ownership, search, pagination, export, history, assignment, SLA, migrations and production security |
 
 **Session limits:** a stolen cookie remains usable until the user logs out, changes their password, is deactivated, or the 8-hour limit passes. Logout cannot target a single device. A request already being processed when a session is revoked may finish. Local development uses plain HTTP, so it must not be exposed to an untrusted network.
 
@@ -1298,6 +1424,13 @@ Security improvements are ongoing.
 - [x] Add a secure web-based change-password feature
 - [x] Add administrator-controlled user creation
 - [x] Record account administration in an append-only audit log
+- [x] Require a password change after an administrator sets a password
+- [x] Reject common and breached passwords (offline)
+- [x] Record successful and failed sign-ins
+- [x] Server-side recovery of lost administrator credentials
+- [x] Archive and verify old audit events
+- [ ] Approved design for removing archived audit events
+- [ ] Multi-factor authentication
 - [x] Add production security configuration, secure cookies and security headers
 - [x] Enforce server-side request and field limits
 - [ ] Configure HTTPS for production

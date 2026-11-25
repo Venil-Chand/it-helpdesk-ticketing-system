@@ -103,6 +103,9 @@ def create_app(environ=None, config=None):
     # Runs after the HTTPS, CSRF and rate-limit checks, before every view
     app.before_request(auth.load_current_user)
 
+    # Accounts whose password was set by someone else may only change it
+    app.before_request(auth.require_password_change)
+
     for blueprint in BLUEPRINTS:
         app.register_blueprint(blueprint)
 

@@ -50,6 +50,8 @@ def sign_in(test, client, username, role="user"):
         "role": role,
         "is_active": 1,
         "session_version": 1,
+        # An ordinary account that chose its own password (migration 9)
+        "must_change_password": 0,
     }
 
     with client.session_transaction() as sess:

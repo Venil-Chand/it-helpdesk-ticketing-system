@@ -18,6 +18,9 @@ Rules enforced here, on the server, whatever the form sends:
   * Accounts are never deleted. Deactivation keeps every ticket, comment
     and history entry exactly as it was.
   * Passwords and password hashes are never written to the audit log.
+  * A password chosen by someone else (a new account, an administrator's
+    reset, or the reset-password command) must be changed by the owner
+    before the account can do anything else (must_change_password).
 
 Session effects: changing a password or the active status ends every
 session of that account (the users_revoke_sessions trigger, migration 6).
@@ -46,6 +49,9 @@ ACCOUNT_DEACTIVATED = "account_deactivated"
 ACCOUNT_REACTIVATED = "account_reactivated"
 PASSWORD_RESET = "password_reset"
 PASSWORD_CHANGED = "password_changed"
+LOGIN_SUCCEEDED = "login_succeeded"
+LOGIN_FAILED = "login_failed"
+AUDIT_ARCHIVED = "audit_archived"
 
 AUDIT_ACTIONS = frozenset({
     ACCOUNT_CREATED,
@@ -54,7 +60,30 @@ AUDIT_ACTIONS = frozenset({
     ACCOUNT_REACTIVATED,
     PASSWORD_RESET,
     PASSWORD_CHANGED,
+    LOGIN_SUCCEEDED,
+    LOGIN_FAILED,
+    AUDIT_ARCHIVED,
 })
+
+# Actions shown by each filter of the audit log page
+AUDIT_CATEGORIES = {
+    "accounts": (ACCOUNT_CREATED, ROLE_CHANGED, ACCOUNT_DEACTIVATED,
+                 ACCOUNT_REACTIVATED, PASSWORD_RESET, PASSWORD_CHANGED,
+                 AUDIT_ARCHIVED),
+    "logins": (LOGIN_SUCCEEDED, LOGIN_FAILED),
+}
+
+# Why a login failed, as stored in new_value. The login page always shows
+# the same message; these are only for administrators reading the log.
+LOGIN_UNKNOWN_ACCOUNT = "unknown account"
+LOGIN_WRONG_PASSWORD = "wrong password"
+LOGIN_ACCOUNT_DEACTIVATED = "account deactivated"
+
+# Who is recorded as the actor of a login attempt that did not succeed
+ANONYMOUS_ACTOR = "anonymous"
+
+# Longest client address stored (an IPv6 address is at most 45 characters)
+MAX_SOURCE_ADDRESS_LENGTH = 64
 
 # Most audit events one page shows
 MAX_AUDIT_EVENTS = 200
@@ -95,7 +124,7 @@ def hash_password(password):
 
 def record_audit_event(conn, *, actor, action, actor_user_id=None,
                        target_user_id=None, target_username=None,
-                       old_value=None, new_value=None):
+                       old_value=None, new_value=None, source_address=None):
     """
     Add one audit event using the caller's open connection.
 
@@ -109,31 +138,49 @@ def record_audit_event(conn, *, actor, action, actor_user_id=None,
         """
         INSERT INTO audit_events
         (actor_user_id, actor, action, target_user_id, target_username,
-         old_value, new_value)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+         old_value, new_value, source_address)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (actor_user_id, actor, action, target_user_id, target_username,
-         old_value, new_value)
+         old_value, new_value,
+         (source_address or None) and source_address[
+             :MAX_SOURCE_ADDRESS_LENGTH]
+         )
     )
 
 
-def list_audit_events(limit=MAX_AUDIT_EVENTS):
-    """The most recent audit events, newest first."""
+def list_audit_events(limit=MAX_AUDIT_EVENTS, category=None):
+    """
+    The most recent audit events, newest first.
+
+    category is a key of AUDIT_CATEGORIES, or None for every event. Any
+    other value raises KeyError; callers check it against the allow list.
+    """
 
     limit = max(1, min(int(limit), MAX_AUDIT_EVENTS))
+
+    where = ""
+    params = []
+
+    if category is not None:
+        actions = AUDIT_CATEGORIES[category]
+        where = f"WHERE action IN ({', '.join('?' for _ in actions)})"
+        params.extend(actions)
 
     conn = db.get_db()
 
     try:
         return conn.execute(
-            """
+            f"""
             SELECT id, created_at, actor_user_id, actor, action,
-                   target_user_id, target_username, old_value, new_value
+                   target_user_id, target_username, old_value, new_value,
+                   source_address
             FROM audit_events
+            {where}
             ORDER BY created_at DESC, id DESC
             LIMIT ?
             """,
-            (limit,)
+            (*params, limit)
         ).fetchall()
 
     finally:
@@ -159,6 +206,7 @@ def list_accounts():
         return conn.execute(
             f"""
             SELECT u.id, u.username, u.role, u.is_active,
+                   u.must_change_password,
                    (SELECT COUNT(*) FROM tickets AS t
                     WHERE t.assigned_to = u.username
                       AND t.status IN ({placeholders})) AS open_assigned
@@ -271,7 +319,8 @@ def create_account(actor_id, username, role, password):
     problem = (
         validation.username_problem(username)
         or (None if role in ROLES else "Choose a valid role.")
-        or validation.new_password_problem(password, password)
+        or validation.new_password_problem(password, password,
+                                           username=username)
     )
 
     if problem:
@@ -294,8 +343,9 @@ def create_account(actor_id, username, role, password):
         try:
             cursor = conn.execute(
                 """
-                INSERT INTO users (username, password_hash, role)
-                VALUES (?, ?, ?)
+                INSERT INTO users
+                (username, password_hash, role, must_change_password)
+                VALUES (?, ?, ?, 1)
                 """,
                 (username, password_hash, role)
             )
@@ -417,11 +467,21 @@ def reset_password(actor_id, target_id, password):
     Set another account's password, ending all of its sessions.
 
     For a user who has forgotten their password. The administrator gives
-    the new password to the user through a separate, trusted channel.
-    Returns the account's username.
+    the new password to the user through a separate, trusted channel, and
+    the user must replace it at their next sign-in. Returns the account's
+    username.
     """
 
-    problem = validation.new_password_problem(password, password)
+    # Read first so the password can be compared with the username before
+    # the slow hash; usernames cannot change, so this stays true below
+    target = get_account(target_id)
+
+    if target is None:
+        raise AccountNotFound()
+
+    problem = validation.new_password_problem(
+        password, password, username=target["username"]
+    )
 
     if problem:
         raise AccountError(problem)
@@ -438,7 +498,10 @@ def reset_password(actor_id, target_id, password):
         )
 
         conn.execute(
-            "UPDATE users SET password_hash = ? WHERE id = ?",
+            """
+            UPDATE users SET password_hash = ?, must_change_password = 1
+            WHERE id = ?
+            """,
             (password_hash, target["id"])
         )
 
@@ -474,11 +537,6 @@ def change_own_password(user_id, session_version, current_password,
     change happened in between, nothing is saved.
     """
 
-    problem = validation.new_password_problem(new_password, new_password)
-
-    if problem:
-        raise AccountError(problem)
-
     conn = db.get_db()
 
     try:
@@ -508,6 +566,13 @@ def change_own_password(user_id, session_version, current_password,
     ):
         raise AccountError("Current password is incorrect.")
 
+    problem = validation.new_password_problem(
+        new_password, new_password, username=account["username"]
+    )
+
+    if problem:
+        raise AccountError(problem)
+
     if check_password_hash(account["password_hash"], new_password):
         raise AccountError("New password must differ from the old password.")
 
@@ -518,7 +583,7 @@ def change_own_password(user_id, session_version, current_password,
 
         cursor = conn.execute(
             """
-            UPDATE users SET password_hash = ?
+            UPDATE users SET password_hash = ?, must_change_password = 0
             WHERE id = ? AND password_hash = ? AND is_active = 1
               AND session_version = ?
             """,
@@ -547,3 +612,133 @@ def change_own_password(user_id, session_version, current_password,
         ).fetchone()[0]
 
     return _run(change)
+
+
+# ---------------------------------------------------
+# OPERATOR PASSWORD RESET (flask reset-password)
+# ---------------------------------------------------
+
+def operator_reset_password(username, password, *, operator):
+    """
+    Reset a password from the server's command line, for lost credentials.
+
+    `operator` is the operating-system account running the command; it is
+    recorded as the actor "cli:<operator>". Every session of the account
+    ends (trigger) and the owner must choose a new password at their next
+    sign-in. A deactivated account is refused: this command never
+    reactivates or unlocks anything.
+
+    The reset and its audit event are saved in one transaction. Returns
+    the account row (id, username, role).
+    """
+
+    account = get_account_by_username(username)
+
+    if account is None:
+        raise AccountNotFound()
+
+    if account["is_active"] != 1:
+        raise AccountError(
+            "This account is deactivated. Its password was not changed; "
+            "an administrator must reactivate it first."
+        )
+
+    problem = validation.new_password_problem(
+        password, password, username=account["username"]
+    )
+
+    if problem:
+        raise AccountError(problem)
+
+    password_hash = hash_password(password)
+
+    def change(conn):
+        conn.execute("BEGIN IMMEDIATE")
+
+        cursor = conn.execute(
+            """
+            UPDATE users SET password_hash = ?, must_change_password = 1
+            WHERE id = ? AND is_active = 1
+            """,
+            (password_hash, account["id"])
+        )
+
+        # Deactivated (or deleted) since the check above
+        if cursor.rowcount != 1:
+            raise AccountError(
+                "The account changed while the password was being reset. "
+                "Nothing was saved; check the account and try again."
+            )
+
+        record_audit_event(
+            conn,
+            actor=f"cli:{operator}",
+            action=PASSWORD_RESET,
+            target_user_id=account["id"],
+            target_username=account["username"]
+        )
+
+        return account
+
+    return _run(change)
+
+
+def get_account_by_username(username):
+    """One account by exact username, without its password hash."""
+
+    conn = db.get_db()
+
+    try:
+        return conn.execute(
+            """
+            SELECT id, username, role, is_active FROM users
+            WHERE username = ?
+            """,
+            (username,)
+        ).fetchone()
+
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------
+# LOGIN EVENTS
+# ---------------------------------------------------
+
+def record_login_event(*, succeeded, account=None, reason=None,
+                       source_address=None):
+    """
+    Record one sign-in attempt in its own short transaction.
+
+    Stored: the outcome, the account (only if it exists), the reason for a
+    failure, and the client address. Never stored: the password, the
+    session cookie, or a username that matches no account (it may be a
+    typo of someone's password, so it is not kept at all).
+
+    Raises sqlite3.Error if the event cannot be saved; the caller decides
+    whether to continue.
+    """
+
+    if succeeded:
+        values = dict(
+            actor_user_id=account["id"],
+            actor=account["username"],
+            action=LOGIN_SUCCEEDED,
+        )
+    else:
+        values = dict(actor=ANONYMOUS_ACTOR, action=LOGIN_FAILED,
+                      new_value=reason)
+
+    if account is not None:
+        values.update(target_user_id=account["id"],
+                      target_username=account["username"])
+
+    conn = db.get_db()
+
+    try:
+        with conn:
+            record_audit_event(conn, source_address=source_address,
+                               **values)
+
+    finally:
+        conn.close()

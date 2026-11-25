@@ -621,7 +621,9 @@ class TestUsernameStability(AssignmentTestCase):
         db.create_ticket("Old", "From the previous admin", "Low", "admin")
         self.sql("DELETE FROM users")
 
-        with patch("setup_accounts.getpass", return_value="x" * 20), \
+        # A valid password, so the reserved name is what gets refused
+        with patch("setup_accounts.getpass",
+                   return_value="quiet-orbit-lantern-58"), \
                 patch("builtins.print") as printed:
             result = setup_accounts.setup_account()
 
@@ -675,12 +677,19 @@ class TestStableUsernameMigration(unittest.TestCase):
 
         result = migrations.migrate(self.path)
 
-        self.assertEqual([m.version for m in result.applied], [7, 8])
+        self.assertEqual([m.version for m in result.applied], [7, 8, 9])
         for table, before in data.items():
             with self.subTest(table=table):
-                self.assertEqual(
-                    self.rows(f"SELECT * FROM {table} ORDER BY 1"), before
-                )
+                after = self.rows(f"SELECT * FROM {table} ORDER BY 1")
+                width = len(before[0]) if before else 0
+                # Every original column is unchanged; migration 9 only
+                # appends users.must_change_password
+                self.assertEqual([row[:width] for row in after], before)
+
+        # Existing accounts are not forced to change their passwords
+        self.assertEqual(
+            self.rows("SELECT must_change_password FROM users"), [(0,)]
+        )
 
         # The pre-existing invalid assignment is kept, not rewritten
         self.assertEqual(self.rows("SELECT assigned_to FROM tickets"),

@@ -24,6 +24,7 @@ from app import app
 PASSWORD = "correct-horse-battery-staple"
 NEW_PASSWORD = "a-brand-new-long-passphrase"
 FAST_HASH = "pbkdf2:sha256:1000"
+CHANGE_PASSWORD_URL = "/account/password"
 
 # A separate address per client keeps the in-memory rate limits apart
 _client_numbers = itertools.count()
@@ -96,10 +97,29 @@ class AccountTestCase(unittest.TestCase):
         return rows[0] if rows else None
 
     def audit(self):
+        """Account administration events, without sign-in records.
+
+        Every signed_in() and can_log_in() call is itself recorded as a
+        login event (migration 9). Those are checked by login_events() and
+        test_login_audit.py, so they are left out here to keep the exact
+        account-event assertions of these tests unchanged.
+        """
+
         return self.sql(
             "SELECT actor_user_id, actor, action, target_user_id, "
             "target_username, old_value, new_value "
-            "FROM audit_events ORDER BY id"
+            "FROM audit_events "
+            "WHERE action NOT IN ('login_succeeded', 'login_failed') "
+            "ORDER BY id"
+        )
+
+    def login_events(self):
+        return self.sql(
+            "SELECT actor_user_id, actor, action, target_user_id, "
+            "target_username, new_value, source_address "
+            "FROM audit_events "
+            "WHERE action IN ('login_succeeded', 'login_failed') "
+            "ORDER BY id"
         )
 
     def new_client(self):
@@ -117,10 +137,36 @@ class AccountTestCase(unittest.TestCase):
         return client
 
     def can_log_in(self, username, password):
+        """True if the credentials are accepted.
+
+        An account whose password was set by an administrator is accepted
+        but sent to Change password first (migration 9); that still counts
+        as a successful sign-in. must_change_password_on_login() checks
+        where it lands.
+        """
+
         response = self.new_client().post(
             "/login", data={"username": username, "password": password}
         )
-        return response.headers.get("Location") == "/"
+        return response.headers.get("Location") in (
+            "/", CHANGE_PASSWORD_URL
+        )
+
+    def must_change_password_on_login(self, username, password):
+        """Sign in and confirm the forced change; returns the client."""
+
+        client = self.new_client()
+        response = client.post(
+            "/login", data={"username": username, "password": password}
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.headers["Location"], CHANGE_PASSWORD_URL)
+
+        # Ordinary pages stay closed until the password is changed
+        blocked = client.get("/")
+        self.assertEqual(blocked.status_code, 302)
+        self.assertEqual(blocked.headers["Location"], CHANGE_PASSWORD_URL)
+        return client
 
     def assert_signed_out(self, client):
         response = client.get("/")
