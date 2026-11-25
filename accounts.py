@@ -18,9 +18,9 @@ Rules enforced here, on the server, whatever the form sends:
   * Accounts are never deleted. Deactivation keeps every ticket, comment
     and history entry exactly as it was.
   * Passwords and password hashes are never written to the audit log.
-  * A password chosen by someone else (a new account or an
-    administrator's reset) must be changed by the owner before the
-    account can do anything else (must_change_password).
+  * A password chosen by someone else (a new account, an administrator's
+    reset, or the reset-password command) must be changed by the owner
+    before the account can do anything else (must_change_password).
 
 Session effects: changing a password or the active status ends every
 session of that account (the users_revoke_sessions trigger, migration 6).
@@ -609,6 +609,93 @@ def change_own_password(user_id, session_version, current_password,
         ).fetchone()[0]
 
     return _run(change)
+
+
+# ---------------------------------------------------
+# OPERATOR PASSWORD RESET (flask reset-password)
+# ---------------------------------------------------
+
+def operator_reset_password(username, password, *, operator):
+    """
+    Reset a password from the server's command line, for lost credentials.
+
+    `operator` is the operating-system account running the command; it is
+    recorded as the actor "cli:<operator>". Every session of the account
+    ends (trigger) and the owner must choose a new password at their next
+    sign-in. A deactivated account is refused: this command never
+    reactivates or unlocks anything.
+
+    The reset and its audit event are saved in one transaction. Returns
+    the account row (id, username, role).
+    """
+
+    account = get_account_by_username(username)
+
+    if account is None:
+        raise AccountNotFound()
+
+    if account["is_active"] != 1:
+        raise AccountError(
+            "This account is deactivated. Its password was not changed; "
+            "an administrator must reactivate it first."
+        )
+
+    problem = validation.new_password_problem(
+        password, password, username=account["username"]
+    )
+
+    if problem:
+        raise AccountError(problem)
+
+    password_hash = hash_password(password)
+
+    def change(conn):
+        conn.execute("BEGIN IMMEDIATE")
+
+        cursor = conn.execute(
+            """
+            UPDATE users SET password_hash = ?, must_change_password = 1
+            WHERE id = ? AND is_active = 1
+            """,
+            (password_hash, account["id"])
+        )
+
+        # Deactivated (or deleted) since the check above
+        if cursor.rowcount != 1:
+            raise AccountError(
+                "The account changed while the password was being reset. "
+                "Nothing was saved; check the account and try again."
+            )
+
+        record_audit_event(
+            conn,
+            actor=f"cli:{operator}",
+            action=PASSWORD_RESET,
+            target_user_id=account["id"],
+            target_username=account["username"]
+        )
+
+        return account
+
+    return _run(change)
+
+
+def get_account_by_username(username):
+    """One account by exact username, without its password hash."""
+
+    conn = db.get_db()
+
+    try:
+        return conn.execute(
+            """
+            SELECT id, username, role, is_active FROM users
+            WHERE username = ?
+            """,
+            (username,)
+        ).fetchone()
+
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------

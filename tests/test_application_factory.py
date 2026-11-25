@@ -390,7 +390,8 @@ class BlueprintRegistrationTests(unittest.TestCase):
         commands = set(self.app.cli.list_commands(None))
 
         self.assertLessEqual(
-            {"db-status", "init-db", "assignment-audit"}, commands
+            {"db-status", "init-db", "assignment-audit", "reset-password"},
+            commands
         )
 
 

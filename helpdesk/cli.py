@@ -4,19 +4,28 @@ Database command-line tools, run through Flask's CLI:
     flask --app app db-status         report the schema version (read-only)
     flask --app app init-db           create or upgrade the schema
     flask --app app assignment-audit  list ineligible assignees (read-only)
+    flask --app app reset-password USERNAME
+                                      recover an account whose password is
+                                      lost, including the last administrator
 
 create_app() attaches these to every application with register_commands().
 They act on database.DB_PATH and never create user accounts; use
 setup_accounts.py for that.
+
+Running them requires a shell on the server as an account that can read
+and write the database file. That operating-system access is what
+authorises them; see "Administrator recovery" in README.md.
 """
 
 import os
+import pwd
 import sqlite3
 import sys
 
 import click
 from flask.cli import with_appcontext
 
+import accounts
 import database as db
 import migrations
 
@@ -183,7 +192,119 @@ def assignment_audit_command():
     sys.exit(1)
 
 
-COMMANDS = (db_status_command, init_db_command, assignment_audit_command)
+def _interactive():
+    """True when a person is typing at a terminal (stdin is a TTY)."""
+
+    return sys.stdin.isatty()
+
+
+def _operator():
+    """
+    The operating-system account running this command, for the audit log.
+
+    Taken from the process's real user id, not from $USER or $LOGNAME,
+    which whoever runs the command can set to anything. When run through
+    sudo, the invoking account named by sudo is added. That part comes
+    from the environment, so the system's own sudo/auth log remains the
+    authoritative record of who ran the command.
+    """
+
+    try:
+        name = pwd.getpwuid(os.getuid()).pw_name
+    except (KeyError, OSError):
+        name = f"uid {os.getuid()}"
+
+    invoker = os.environ.get("SUDO_USER")
+
+    if invoker and invoker != name:
+        name = f"{name} (sudo by {invoker})"
+
+    return name[:64] or "unknown"
+
+
+def _require_current_schema():
+    try:
+        status = migrations.schema_status(db.DB_PATH)
+    except sqlite3.Error as error:
+        _fail(f"could not read the database ({type(error).__name__})")
+
+    if not status.is_current:
+        _fail(
+            "the database schema is not up to date; nothing was changed. "
+            "Run 'flask --app app init-db' first."
+        )
+
+
+@click.command("reset-password")
+@click.argument("username")
+@with_appcontext
+def reset_password_command(username):
+    """Set a new password for USERNAME, for example a locked-out admin.
+
+    The password is typed twice at a hidden prompt; it is never accepted
+    as an argument, an environment variable or piped input. Every session
+    of the account ends, the owner must choose a new password at the next
+    sign-in, and an audit event names the operating-system account that
+    ran the command. Deactivated accounts are refused.
+    """
+
+    if not _interactive():
+        _fail(
+            "run this command in an interactive terminal. Passwords are "
+            "never read from pipes, files or arguments. Nothing was changed."
+        )
+
+    _require_current_schema()
+
+    account = accounts.get_account_by_username(username)
+
+    if account is None:
+        _fail("no account has that exact username; nothing was changed.")
+
+    # Checked again inside the transaction; this only avoids asking for a
+    # password that could not be used
+    if account["is_active"] != 1:
+        _fail(
+            "this account is deactivated, so its password was not changed. "
+            "An administrator must reactivate it first."
+        )
+
+    password = click.prompt(
+        "New password",
+        hide_input=True,
+        confirmation_prompt="Repeat new password"
+    )
+
+    try:
+        accounts.operator_reset_password(
+            username, password, operator=_operator()
+        )
+
+    except accounts.AccountNotFound:
+        _fail("no account has that exact username; nothing was changed.")
+
+    except accounts.AccountError as error:
+        _fail(f"{error} Nothing was changed.")
+
+    except sqlite3.Error as error:
+        _fail(
+            "the database could not be updated, so nothing was changed "
+            f"({type(error).__name__})."
+        )
+
+    click.echo(
+        f"Password for {username!r} reset. All of its sessions have ended, "
+        "and a new password must be chosen at the next sign-in. Give the "
+        "temporary password to the owner through a trusted channel."
+    )
+
+
+COMMANDS = (
+    db_status_command,
+    init_db_command,
+    assignment_audit_command,
+    reset_password_command,
+)
 
 
 def register_commands(app):
