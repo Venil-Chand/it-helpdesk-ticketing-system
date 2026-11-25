@@ -68,6 +68,38 @@ def username_problem(username):
     return None
 
 
+# Notification addresses: a plain ASCII address, no display name, no
+# comments, no quoting. Deliberately stricter than RFC 5322, so an address
+# can never carry a header line break or a second recipient.
+MAX_EMAIL_LENGTH = 254
+MAX_EMAIL_LOCAL_LENGTH = 64
+
+_EMAIL_PATTERN = re.compile(
+    r"[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*"
+    r"@"
+    r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+"
+    r"[A-Za-z](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?",
+    re.ASCII
+)
+
+
+def email_problem(address):
+    """Why `address` cannot receive notifications, or None."""
+
+    if (
+        not isinstance(address, str)
+        or len(address) > MAX_EMAIL_LENGTH
+        or not _EMAIL_PATTERN.fullmatch(address)
+        or len(address.rsplit("@", 1)[0]) > MAX_EMAIL_LOCAL_LENGTH
+    ):
+        return (
+            "Enter a plain email address such as name@example.org "
+            "(no display name, spaces or line breaks)."
+        )
+
+    return None
+
+
 def normalize_for_blocklist(password):
     """The form in which passwords are compared with the blocklist."""
 

@@ -11,6 +11,10 @@ Database command-line tools, run through Flask's CLI:
     flask --app app audit-verify-archive PATH
                                       check an archive (read-only)
 
+Notification commands (notifications-send, notifications-status,
+notifications-check-config, set-email) live in notification_cli.py and
+are registered here too.
+
 create_app() attaches these to every application with register_commands().
 They act on database.DB_PATH and never create user accounts; use
 setup_accounts.py for that.
@@ -403,7 +407,10 @@ COMMANDS = (
 def register_commands(app):
     """Make the database commands available as "flask --app app <name>"."""
 
-    for command in COMMANDS:
+    # Imported here: notification_cli uses helpers from this module
+    from . import notification_cli
+
+    for command in COMMANDS + notification_cli.COMMANDS:
         app.cli.add_command(command)
 
 
