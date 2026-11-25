@@ -16,6 +16,9 @@ version:
     5  account activation status (users.is_active)
     6  session revocation (users.session_version and its trigger)
     7  stable usernames (no renaming, no reuse of names in ticket records)
+    8  append-only administrative audit events
+    9  forced password changes and login event addresses
+   10  notification queue (users.email, notifications, notification_attempts)
 
 Each migration in MIGRATIONS moves the schema forward by exactly one
 version. migrate() applies every migration above the stored version, in
@@ -547,6 +550,159 @@ def _migration_9_account_policy(conn):
 
 
 # ---------------------------------------------------
+# MIGRATION 10: NOTIFICATION QUEUE
+# ---------------------------------------------------
+
+# The values these CHECK constraints allow are written out here, not taken
+# from the notifications package, so that version 10 always means exactly
+# this schema even if the code changes later.
+_NOTIFICATION_EVENT_TYPES = (
+    "ticket_created", "ticket_assigned", "ticket_unassigned",
+    "staff_comment", "requester_comment", "ticket_resolved",
+    "ticket_closed", "password_changed", "password_reset",
+    "role_changed", "account_reactivated",
+)
+
+_NOTIFICATION_REASONS = (
+    "requester", "assignee", "previous_assignee", "staff", "account_owner",
+)
+
+_NOTIFICATION_STATUSES = (
+    "pending", "processing", "sent", "simulated", "failed", "cancelled",
+)
+
+_ATTEMPT_OUTCOMES = (
+    "sent", "simulated", "retry", "deferred", "failed", "cancelled",
+    "interrupted",
+)
+
+
+def _sql_list(values):
+    """A constant tuple as an SQL list literal, for CHECK constraints."""
+
+    return ", ".join(f"'{value}'" for value in values)
+
+
+def _migration_10_notifications(conn):
+    """
+    Add users.email and the notification queue (a transactional outbox).
+
+    users.email     where an account's notifications are delivered. NULL
+                    for every existing account: an address is never
+                    guessed. Set with "flask set-email".
+    notifications   one row per message to one account. It is written in
+                    the same transaction as the ticket or account change
+                    that caused it, and delivered later by the
+                    "flask notifications-send" worker. dedupe_key is
+                    UNIQUE, so the same event can never queue the same
+                    message twice.
+    notification_attempts
+                    append-only delivery history: one row per attempt,
+                    with a sanitised error. Never holds message text,
+                    addresses or credentials.
+
+    Timestamps are written by the application as UTC text with an
+    explicit +00:00 offset and milliseconds, so they compare correctly as
+    text. No rows are added for anything that happened before this
+    migration, and existing rows in every other table are untouched.
+    """
+
+    if "email" not in _columns(conn, "users"):
+        conn.execute("""
+            ALTER TABLE users
+            ADD COLUMN email TEXT
+            CHECK (email IS NULL OR (length(email) BETWEEN 3 AND 254
+                                     AND instr(email, '@') > 1))
+        """)
+
+    conn.execute(f"""
+        CREATE TABLE IF NOT EXISTS notifications (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_type         TEXT NOT NULL CHECK (event_type IN (
+                                   {_sql_list(_NOTIFICATION_EVENT_TYPES)})),
+            dedupe_key         TEXT NOT NULL UNIQUE,
+            recipient_user_id  INTEGER NOT NULL,
+            recipient_username TEXT NOT NULL,
+            recipient_reason   TEXT NOT NULL CHECK (recipient_reason IN (
+                                   {_sql_list(_NOTIFICATION_REASONS)})),
+            ticket_id          INTEGER,
+            payload            TEXT NOT NULL DEFAULT '{{}}',
+            status             TEXT NOT NULL DEFAULT 'pending'
+                               CHECK (status IN (
+                                   {_sql_list(_NOTIFICATION_STATUSES)})),
+            attempts           INTEGER NOT NULL DEFAULT 0
+                               CHECK (attempts >= 0),
+            deferrals          INTEGER NOT NULL DEFAULT 0
+                               CHECK (deferrals >= 0),
+            created_at         TEXT NOT NULL,
+            updated_at         TEXT NOT NULL,
+            next_attempt_at    TEXT NOT NULL,
+            claim_token        TEXT,
+            claimed_by         TEXT,
+            claimed_at         TEXT,
+            claimed_until      TEXT,
+            sent_at            TEXT,
+            delivery_mode      TEXT CHECK (delivery_mode IS NULL
+                                   OR delivery_mode IN ('local', 'smtp')),
+            last_error         TEXT,
+
+            FOREIGN KEY (ticket_id) REFERENCES tickets(id)
+        )
+    """)
+
+    # The worker's two questions: what is due, and which claims expired
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_notifications_due
+        ON notifications (status, next_attempt_at, id)
+    """)
+
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_notifications_claims
+        ON notifications (status, claimed_until)
+    """)
+
+    conn.execute(f"""
+        CREATE TABLE IF NOT EXISTS notification_attempts (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            notification_id INTEGER NOT NULL,
+            attempt         INTEGER NOT NULL,
+            worker          TEXT NOT NULL,
+            delivery_mode   TEXT NOT NULL,
+            started_at      TEXT NOT NULL,
+            finished_at     TEXT NOT NULL,
+            outcome         TEXT NOT NULL CHECK (outcome IN (
+                                {_sql_list(_ATTEMPT_OUTCOMES)})),
+            error           TEXT,
+
+            FOREIGN KEY (notification_id) REFERENCES notifications(id)
+        )
+    """)
+
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_notification_attempts_notification
+        ON notification_attempts (notification_id, id)
+    """)
+
+    # Delivery history is evidence of what was (possibly) sent: the
+    # database itself refuses edits and deletions
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS notification_attempts_no_update
+        BEFORE UPDATE ON notification_attempts
+        BEGIN
+            SELECT RAISE(ABORT, 'notification attempts are append-only');
+        END
+    """)
+
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS notification_attempts_no_delete
+        BEFORE DELETE ON notification_attempts
+        BEGIN
+            SELECT RAISE(ABORT, 'notification attempts are append-only');
+        END
+    """)
+
+
+# ---------------------------------------------------
 # MIGRATION REGISTRY
 # ---------------------------------------------------
 
@@ -568,6 +724,8 @@ MIGRATIONS = (
               _migration_8_audit_events),
     Migration(9, "Add forced password changes and login event addresses",
               _migration_9_account_policy),
+    Migration(10, "Add notification queue and account email addresses",
+              _migration_10_notifications),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1].version
@@ -598,7 +756,7 @@ _REQUIRED_COLUMNS = {
     "users": {
         "id": False, "username": True, "password_hash": True, "role": True,
         "is_active": True, "session_version": True,
-        "must_change_password": True,
+        "must_change_password": True, "email": False,
     },
     "tickets": {
         "id": False, "title": True, "description": True,
@@ -624,6 +782,21 @@ _REQUIRED_COLUMNS = {
         "target_username": False, "old_value": False, "new_value": False,
         "source_address": False,
     },
+    "notifications": {
+        "id": False, "event_type": True, "dedupe_key": True,
+        "recipient_user_id": True, "recipient_username": True,
+        "recipient_reason": True, "ticket_id": False, "payload": True,
+        "status": True, "attempts": True, "deferrals": True,
+        "created_at": True, "updated_at": True, "next_attempt_at": True,
+        "claim_token": False, "claimed_by": False, "claimed_at": False,
+        "claimed_until": False, "sent_at": False, "delivery_mode": False,
+        "last_error": False,
+    },
+    "notification_attempts": {
+        "id": False, "notification_id": True, "attempt": True,
+        "worker": True, "delivery_mode": True, "started_at": True,
+        "finished_at": True, "outcome": True, "error": False,
+    },
 }
 
 _PRIMARY_KEYS = {
@@ -633,6 +806,8 @@ _PRIMARY_KEYS = {
     "ticket_history": "id",
     "ticket_sla": "ticket_id",
     "audit_events": "id",
+    "notifications": "id",
+    "notification_attempts": "id",
 }
 
 # (child table, child column) -> parent table, parent column
@@ -640,6 +815,8 @@ _FOREIGN_KEYS = {
     ("comments", "ticket_id"): ("tickets", "id"),
     ("ticket_history", "ticket_id"): ("tickets", "id"),
     ("ticket_sla", "ticket_id"): ("tickets", "id"),
+    ("notifications", "ticket_id"): ("tickets", "id"),
+    ("notification_attempts", "notification_id"): ("notifications", "id"),
 }
 
 # index -> (table, [(column, descending), ...])
@@ -657,6 +834,17 @@ _INDEXES = {
     ),
     "idx_audit_events_date": (
         "audit_events", [("created_at", True), ("id", True)]
+    ),
+    "idx_notifications_due": (
+        "notifications", [("status", False), ("next_attempt_at", False),
+                          ("id", False)]
+    ),
+    "idx_notifications_claims": (
+        "notifications", [("status", False), ("claimed_until", False)]
+    ),
+    "idx_notification_attempts_notification": (
+        "notification_attempts", [("notification_id", False),
+                                  ("id", False)]
     ),
 }
 
@@ -677,6 +865,10 @@ _TRIGGERS = {
     "users_no_historical_username_reuse": "BEFORE INSERT ON USERS",
     "audit_events_no_update": "BEFORE UPDATE ON AUDIT_EVENTS",
     "audit_events_no_delete": "BEFORE DELETE ON AUDIT_EVENTS",
+    "notification_attempts_no_update":
+        "BEFORE UPDATE ON NOTIFICATION_ATTEMPTS",
+    "notification_attempts_no_delete":
+        "BEFORE DELETE ON NOTIFICATION_ATTEMPTS",
 }
 
 # Text each username trigger must also contain, after normalising, so a
@@ -730,6 +922,22 @@ def find_schema_problems(conn):
     if "users" in tables and not _has_unique_index(conn, "users",
                                                    ["username"]):
         problems.append("users.username must be UNIQUE")
+
+    # Without it the same event could queue the same message twice
+    if "notifications" in tables and not _has_unique_index(
+        conn, "notifications", ["dedupe_key"]
+    ):
+        problems.append("notifications.dedupe_key must be UNIQUE")
+
+    if "notifications" in tables:
+        sql = _object_sql(conn, "table", "notifications")
+        for column in ("EVENT_TYPE IN", "RECIPIENT_REASON IN",
+                       "STATUS IN", "ATTEMPTS >= 0"):
+            if column not in sql:
+                problems.append(
+                    "notifications is missing a CHECK constraint"
+                )
+                break
 
     if "users" in tables and "is_active" in _columns(conn, "users"):
         if "CHECK(IS_ACTIVE IN(0, 1))" not in _object_sql(conn, "table",

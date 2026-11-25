@@ -284,10 +284,11 @@ class TestMigrationNine(unittest.TestCase):
 
         result = migrations.migrate(self.path)
 
-        self.assertEqual([m.version for m in result.applied], [9])
-        self.assertEqual(SCHEMA_VERSION, 9)
+        # Migration 9, then migration 10 (users.email, NULL for everyone)
+        self.assertEqual([m.version for m in result.applied], [9, 10])
+        self.assertEqual(SCHEMA_VERSION, 10)
         self.assertEqual(
-            self.sql("SELECT * FROM users"), [users[0] + (0,)]
+            self.sql("SELECT * FROM users"), [users[0] + (0, None)]
         )
         self.assertEqual(
             self.sql("SELECT * FROM audit_events"), [events[0] + (None,)]
@@ -329,7 +330,11 @@ class TestMigrationNine(unittest.TestCase):
                          "INTEGER NOT NULL DEFAULT 0")
             conn.execute("ALTER TABLE audit_events "
                          "ADD COLUMN source_address TEXT")
-            conn.execute("PRAGMA user_version = 9")
+            # Complete the later migrations, so the database claims to be
+            # current and the full schema check runs
+            for migration in MIGRATIONS[9:]:
+                migration.apply(conn)
+            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
         self.assertIn(
             "users.must_change_password is missing its CHECK",

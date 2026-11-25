@@ -34,6 +34,14 @@ AUDIT_OBJECTS = (
     "audit_events_no_update", "audit_events_no_delete",
 )
 
+# Everything migration 10 adds besides the users.email column
+NOTIFICATION_OBJECTS = (
+    "notifications", "notification_attempts", "idx_notifications_due",
+    "idx_notifications_claims", "idx_notification_attempts_notification",
+    "notification_attempts_no_update", "notification_attempts_no_delete",
+    "sqlite_autoindex_notifications_1",
+)
+
 
 # Table definitions exactly as created by earlier versions of the code
 ORIGINAL_TICKETS_SQL = """
@@ -519,7 +527,8 @@ class TestUpgradeUnversionedCurrentSchema(UpgradeTestCase):
         self.assert_fully_migrated()
 
         # Migrations 5, 6 and 7 change only users and add its triggers;
-        # migration 8 only adds the audit_events table and its objects
+        # migration 8 only adds the audit_events table and its objects;
+        # migration 10 only adds users.email and the notification tables
         def without_users(objects):
             return [
                 item for item in objects
@@ -528,6 +537,7 @@ class TestUpgradeUnversionedCurrentSchema(UpgradeTestCase):
                     "users_username_immutable",
                     "users_no_historical_username_reuse",
                     *AUDIT_OBJECTS,
+                    *NOTIFICATION_OBJECTS,
                 )
             ]
 
@@ -535,6 +545,7 @@ class TestUpgradeUnversionedCurrentSchema(UpgradeTestCase):
             item[1] for item in schema
         }
         self.assertLessEqual(set(AUDIT_OBJECTS), added)
+        self.assertLessEqual(set(NOTIFICATION_OBJECTS), added)
 
         self.assertEqual(without_users(self.schema()), without_users(schema))
         self.assertEqual(

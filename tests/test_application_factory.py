@@ -922,13 +922,13 @@ class CliThroughFactoryTests(unittest.TestCase):
         self.assertIn("Every assigned ticket has an eligible assignee",
                       audit.output)
 
-    def test_schema_version_nine_is_current(self):
-        self.assertEqual(migrations.SCHEMA_VERSION, 9)
+    def test_schema_version_ten_is_current(self):
+        self.assertEqual(migrations.SCHEMA_VERSION, 10)
 
         self.run_command("init-db")
         status = migrations.schema_status(self.db_path)
 
-        self.assertEqual((status.version, status.state), (9, "current"))
+        self.assertEqual((status.version, status.state), (10, "current"))
 
     def test_init_db_backup_option_still_works(self):
         self.run_command("init-db")
