@@ -10,6 +10,8 @@ Built as a portfolio and practical learning project by Venil Chand, a computing 
 
 The project demonstrates Python programming, web development, relational databases, authentication, role-based permissions, software testing, and Git version control.
 
+**Version 1.0.0-rc1** (release candidate). Guides for installation, administrators, users, security, backups, disaster recovery and the pilot are in **[docs/](docs/README.md)**.
+
 ---
 
 ## Technologies Used
@@ -22,7 +24,7 @@ The project demonstrates Python programming, web development, relational databas
 | Password security | Werkzeug password hashing |
 | Templates | Jinja2 |
 | Frontend | Bootstrap 5.3 and Bootstrap Icons |
-| Testing | Python `unittest` |
+| Testing | Python `unittest`, Playwright (headless Chromium) |
 | Development environment | Ubuntu WSL2 on Windows |
 | Version control | Git and GitHub |
 
@@ -55,7 +57,7 @@ The project demonstrates Python programming, web development, relational databas
 - **Audit archiving** — copy events older than the retention period to a verified, checksummed archive without deleting anything
 - **Email notifications** — ticket creation, assignment, comments, resolution and account-security changes queue notifications in the same database transaction; a separate worker (`flask --app app notifications-send`) delivers them with bounded retries, to a private local folder in development (simulated, never sent) or through SMTP. See [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md)
 - **Versioned database migrations** — explicit `flask --app app init-db` and read-only `db-status` commands; upgrades run in one transaction and never seed accounts
-- **Automated tests** — 1,228 tests covering notifications (events, recipients, queue concurrency, retries, SMTP failures), the application factory, password policy, forced password changes, sign-in auditing, administrator recovery, audit archiving, authentication, authorization, CSRF, account administration, password changes, audit events, search, pagination, CSV export, history, assignment rules, SLA policy and monitoring, and database migrations
+- **Automated tests** — 1,421 unit and integration tests and 17 headless-browser end-to-end tests, covering notifications (events, recipients, queue concurrency, retries, SMTP failures), the application factory, password policy, forced password changes, sign-in auditing, administrator recovery, audit archiving, authentication, authorization, CSRF, account administration, password changes, audit events, search, pagination, CSV export, history, assignment rules, SLA policy and monitoring, and database migrations
 
 ---
 
@@ -556,9 +558,21 @@ it-helpdesk-ticketing-system/
 ├── security_data/
 │   ├── README.md                (blocklist sources, checksums and limits)
 │   └── common_passwords.txt.gz
-├── docs/
+├── docs/                        (version 1.0 documentation; index: README.md)
+│   ├── README.md                (which document covers what)
+│   ├── INSTALLATION.md, ADMINISTRATOR_GUIDE.md, USER_GUIDE.md
+│   ├── PRODUCTION_OPERATIONS.md (deployment, backups, monitoring, recovery)
+│   ├── SECURITY_CONFIGURATION.md, BACKUP_AND_RESTORE.md
+│   ├── DISASTER_RECOVERY.md, KNOWN_LIMITATIONS.md, UAT_CHECKLIST.md
+│   ├── RELEASE_NOTES_1.0.0-rc1.md, RELEASE_READINESS_1.0.0-rc1.md
 │   ├── AUDIT_RETENTION.md
 │   └── NOTIFICATIONS.md         (notification architecture, rules, deployment)
+├── e2e/                         (browser tests: python -m unittest discover -s e2e)
+│   ├── harness.py               (temporary database, real setup commands,
+│   │                             loopback server, fake SMTP server)
+│   ├── serve.py                 (runs the app with a movable clock)
+│   ├── test_browser_workflows.py
+│   └── requirements.txt         (Playwright, test-only)
 ├── requirements.txt
 ├── .env.example
 ├── .gitignore
@@ -638,7 +652,9 @@ it-helpdesk-ticketing-system/
 | `audit_archive.py` | Copies old audit events to a checksummed archive and verifies it; never deletes |
 | `notifications/` | The notification engine: queued in the ticket or account transaction, delivered by a separate worker (see [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md)) |
 | `proxy_trust.py` | Believes forwarded headers only from configured proxies |
-| `tests/` | 1,228 automated tests covering notifications, the application factory, account policy and recovery, auth, CSRF, ownership, search, pagination, CSV export, history, assignment, SLA, migrations and production security |
+| `tests/` | 1,421 automated tests covering notifications, the application factory, account policy and recovery, auth, CSRF, ownership, search, pagination, CSV export, history, assignment, SLA, migrations and production security |
+| `e2e/` | 17 end-to-end browser tests (Playwright, headless Chromium) and their harness: a temporary database, the real setup commands and a loopback server per test class |
+| `docs/` | Version 1.0 documentation (index: [docs/README.md](docs/README.md)) |
 
 The local `helpdesk.db` database and `.env` file are excluded from version control.
 
@@ -844,7 +860,7 @@ Routes declare their access rule with a decorator:
 | `@login_required` | Any verified, active account |
 | `@staff_required` | Active technicians and administrators |
 
-To deactivate or reactivate an account until an admin screen exists, **back up the database first**, then run:
+Deactivate and reactivate accounts on the **Users** page (see [docs/ADMINISTRATOR_GUIDE.md](docs/ADMINISTRATOR_GUIDE.md)). Only if the web interface is unavailable, **back up the database first**, then run:
 
 ```bash
 sqlite3 helpdesk.db "UPDATE users SET is_active = 0 WHERE username = 'example';"
@@ -1320,9 +1336,8 @@ These tests build a separate application for each environment and use temporary 
 
 ### Remaining limitations
 
-- Not deployed or tested behind a live Caddy instance or production WSGI server.
-- Login response time can reveal whether a username exists, because unknown users skip password hashing.
-- Rate limits are in memory, so they reset on restart and are not shared between workers.
+- Not deployed. Real Caddy in front of real Gunicorn is tested in CI (14 proxy-boundary checks), but never with a real certificate or DNS name.
+- Rate limits are per client address and shared between workers through Redis; if Redis is unavailable, sign-in is refused (fail closed).
 - `APP_ENV` defaults to development. A server started without it accepts only localhost hostnames, but it does not enforce HTTPS.
 - `flask run` cannot be blocked in production by the app itself, so the deployment must use a WSGI server.
 - Every `flask --app app ...` command (including `db-status` and `init-db`) loads `.env` through Flask's own CLI, even when `APP_ENV=production`. It never overrides a variable that is already set, but it can fill in missing ones. On production servers, set `FLASK_SKIP_DOTENV=1` or keep no `.env` file.
@@ -1335,7 +1350,7 @@ These tests build a separate application for each environment and use temporary 
 
 ## Automated Testing
 
-The project includes 1,228 automated tests using Python's built-in `unittest` framework. CI runs them on Python 3.13.
+The project includes 1,421 automated tests using Python's built-in `unittest` framework, and 17 end-to-end browser tests in `e2e/` that drive the real application in headless Chromium (Playwright). CI runs both on Python 3.13, and validates the Caddy configuration with the real Caddy. How to run the browser tests: [docs/INSTALLATION.md](docs/INSTALLATION.md#7-run-the-tests). Version 1.0 verification results: [docs/RELEASE_READINESS_1.0.0-rc1.md](docs/RELEASE_READINESS_1.0.0-rc1.md).
 
 To run the full suite:
 
@@ -1454,7 +1469,7 @@ Coverage is still not exhaustive. Concurrent migration attempts are tested, but 
 | Administrative audit log | Append-only (enforced by triggers); no passwords recorded; archiving without deletion |
 | Ticket assignment | Only active technicians and administrators; enforced in the database transaction; tested |
 | Username reuse | Usernames cannot be renamed or given to a new account while ticket records use them (migration 7) |
-| Automated security testing | 1,228 tests covering password policy, forced changes, sign-in auditing, recovery, audit archiving, account administration, password changes, audit events, the application factory, auth, CSRF, ownership, search, pagination, export, history, assignment, SLA, migrations and production security |
+| Automated security testing | 1,421 unit and 17 browser tests (15/15 security mutants killed) covering password policy, forced changes, sign-in auditing, recovery, audit archiving, account administration, password changes, audit events, the application factory, auth, CSRF, ownership, search, pagination, export, history, assignment, SLA, migrations and production security |
 
 **Session limits:** a stolen cookie remains usable until the user logs out, changes their password, is deactivated, or the 8-hour limit passes. Logout cannot target a single device. A request already being processed when a session is revoked may finish. Local development uses plain HTTP, so it must not be exposed to an untrusted network.
 
@@ -1469,8 +1484,7 @@ Security improvements are ongoing.
 - Email notifications are implemented but no SMTP provider has been chosen; only simulated local delivery has been used (see [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md#known-limitations))
 - No automatic SLA alerts; overdue tickets are visible only on the dashboard
 - No file attachments
-- No end-to-end browser testing
-- No load or concurrency testing
+- Load and concurrency were tested only on a development machine (indicative figures in docs/RELEASE_READINESS_1.0.0-rc1.md), not on the target server
 - Not deployed; production mode still needs a reverse proxy and WSGI server
 - No "down" migrations; recovery from a bad upgrade means restoring a backup
 - On databases first upgraded by the retired `migrate.py`, `tickets.updated_at` has no default, so new tickets show "Not recorded" until they are first updated. Fixing the default would require rebuilding the table.
@@ -1523,7 +1537,7 @@ Security improvements are ongoing.
 
 - [x] Prepare production configuration
 - [x] Configure Gunicorn (prepared and tested locally; not deployed)
-- [x] Prepare a Caddy HTTPS reverse-proxy configuration (not yet validated with Caddy or deployed)
+- [x] Prepare a Caddy HTTPS reverse-proxy configuration (validated with the real Caddy in CI; not deployed)
 - [x] Shared Redis rate limiting, encrypted backups, restoration drill, monitoring (see docs/PRODUCTION_OPERATIONS.md)
 - [ ] Perform security review
 - [ ] Deploy to a suitable Linux hosting environment
@@ -1550,6 +1564,6 @@ Development has included AI-assisted guidance and code review, with local testin
 
 ## Project Status
 
-**Active development — local educational prototype**
+**Version 1.0.0-rc1 — release candidate (not tagged, not deployed)**
 
-The application is being improved progressively, with an emphasis on learning software engineering, writing maintainable Python code and developing secure application features.
+Suitable for a local demonstration and, with the conditions listed in the readiness report, for a controlled internal pilot. **Not ready for public production.** See the [version 1.0 documentation](docs/README.md), the [release notes](docs/RELEASE_NOTES_1.0.0-rc1.md) and the [release-readiness report](docs/RELEASE_READINESS_1.0.0-rc1.md).
