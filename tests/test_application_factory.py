@@ -85,6 +85,8 @@ OLD_ENDPOINTS = (
 
 # The application-wide hooks, in the order they must run
 EXPECTED_BEFORE_REQUEST = [
+    # First, so every request (even a refused one) has an ID in its logs
+    "assign_request_id",
     "require_https_in_production",
     "csrf_protect",
     "_check_request_limit",
@@ -378,7 +380,17 @@ class BlueprintRegistrationTests(unittest.TestCase):
         ]
 
         self.assertEqual(names, EXPECTED_BEFORE_REQUEST)
-        self.assertEqual(len(self.app.after_request_funcs[None]), 2)
+
+        # The request ID header, the security headers and the rate
+        # limiter's headers
+        # (Flask-Limiter registers its hook as a functools.partial)
+        self.assertEqual(
+            [getattr(hook, "__name__", None)
+             or getattr(hook, "func").__name__
+             for hook in self.app.after_request_funcs[None]],
+            ["add_request_id_header", "__inject_headers",
+             "add_security_headers"]
+        )
 
         # No blueprint adds hooks of its own that could run twice or
         # cover only part of the site

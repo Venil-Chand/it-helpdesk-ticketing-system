@@ -14,6 +14,8 @@ from flask import Response, current_app
 import database as db
 import migrations
 
+from .logging_setup import current_request_id
+
 
 # Shown to anyone who reaches the site while the schema is not ready.
 # It deliberately names no file paths, versions or table names.
@@ -67,6 +69,27 @@ def request_too_large(error):
         "The submitted data is too large. The limit is 1 MiB per request. "
         "Nothing was saved.\n",
         413
+    )
+
+
+def internal_error(error):
+    """
+    Answer an unexpected exception without revealing anything about it.
+
+    Flask has already logged the full traceback, tagged with this
+    request's ID, before calling this. The visitor sees only that ID, so
+    an administrator can find the log entry; never the exception, a file
+    path, a setting or any stored data.
+    """
+
+    reference = current_request_id()
+
+    return plain_error(
+        "Something went wrong and the request could not be completed. "
+        "If it keeps happening, tell your administrator"
+        + (f" and quote reference {reference}" if reference else "")
+        + ".\n",
+        500
     )
 
 
@@ -142,4 +165,5 @@ def register_error_handlers(app):
     app.register_error_handler(400, bad_request)
     app.register_error_handler(403, forbidden)
     app.register_error_handler(413, request_too_large)
+    app.register_error_handler(500, internal_error)
     app.register_error_handler(sqlite3.OperationalError, database_not_ready)
