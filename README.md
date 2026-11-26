@@ -441,30 +441,30 @@ All pending migrations run inside **one** SQLite transaction, started with `BEGI
 
 | | Local development | Production |
 |---|---|---|
-| Start command | `python app.py` (Flask development server) | A WSGI server such as Gunicorn, with several worker processes |
+| Start command | `python app.py` (Flask development server) | Gunicorn (`deploy/gunicorn.conf.py`, `wsgi:application`) with several worker processes, behind Caddy |
 | Migrations | Run `flask --app app init-db` once, and again after pulling schema changes | Run once per deployment, by the operator, **before** starting the service |
 | Missing or outdated schema | `python app.py` refuses to start and prints the command to run | Requests that need missing tables return **503 Service Unavailable**, not 500, and the log names the command to run |
 
 Web workers never migrate the database. If several Gunicorn workers each tried to migrate at startup, they would compete for the same database and could start serving before the upgrade finished.
 
-Deployment sequence:
+Deployment sequence (the full procedure, including releases and rollback, is in [docs/PRODUCTION_OPERATIONS.md](docs/PRODUCTION_OPERATIONS.md#10-deployment-and-rollback)):
 
 ```bash
-sudo systemctl stop helpdesk
-flask --app app init-db --backup-to /var/backups/helpdesk/helpdesk-$(date +%Y%m%d-%H%M%S).db
+sudo systemctl stop helpdesk-web helpdesk-notifications
+flask --app app init-db --backup-to /var/backups/helpdesk/pre-upgrade-$(date -u +%Y%m%dT%H%M%SZ).db
 flask --app app db-status          # must exit 0
-sudo systemctl start helpdesk
+sudo systemctl start helpdesk-web helpdesk-notifications
 ```
 
-`db-status` can also guard the service itself, so it will not start against an outdated schema. Example systemd excerpt:
+`db-status` also guards the service itself, so it will not start against an outdated schema (`deploy/systemd/helpdesk-web.service`):
 
 ```ini
 [Service]
-ExecStartPre=/srv/helpdesk/.venv/bin/flask --app app db-status
-ExecStart=/srv/helpdesk/.venv/bin/gunicorn --workers 3 app:app
+ExecStartPre=/opt/helpdesk/current/.venv/bin/flask --app app db-status
+ExecStart=/opt/helpdesk/current/.venv/bin/gunicorn --config deploy/gunicorn.conf.py wsgi:application
 ```
 
-Gunicorn is not yet in `requirements.txt`; production deployment is still on the roadmap.
+`wsgi.py` repeats the schema check and also refuses to start when Redis (the shared rate-limit store) does not answer.
 
 ### Preparing a rollback and recovery procedure
 
@@ -503,10 +503,15 @@ If a database was ever initialised with that script, make sure every account cre
 ```text
 it-helpdesk-ticketing-system/
 ├── app.py                       (entry point: app = create_app())
+├── wsgi.py                      (production entry point for Gunicorn:
+│                                 JSON logs and startup checks)
 ├── helpdesk/                    (the web application package)
 │   ├── __init__.py              (create_app(): the application factory)
 │   ├── security.py              (HTTPS, CSRF, rate limit, proxy, headers)
-│   ├── errors.py                (plain-text 400/403/413 and 503 responses)
+│   ├── errors.py                (plain-text 400/403/413/500 and 503 responses)
+│   ├── logging_setup.py         (request IDs and JSON log lines)
+│   ├── readiness.py             (startup and readiness checks)
+│   ├── health.py                (blueprint "health": /healthz, /readyz)
 │   ├── auth.py                  (blueprint "auth": login, logout, sessions)
 │   ├── dashboard.py             (blueprint "dashboard": ticket list, SLA cards)
 │   ├── tickets.py               (blueprint "tickets": create, view, update)
@@ -517,12 +522,17 @@ it-helpdesk-ticketing-system/
 │   ├── cli.py                   (db-status, init-db, assignment-audit,
 │   │                             reset-password, audit-archive, audit-verify-archive)
 │   ├── notification_cli.py      (notifications-send, notifications-status,
+│   │                             notifications-requeue,
 │   │                             notifications-check-config, set-email)
+│   ├── backup_cli.py            (backup-create, -verify, -transfer, -restore,
+│   │                             -drill, -prune, -restore-live, -generate-key)
+│   ├── ops_cli.py               (ops-check: one monitoring command)
 │   └── clock.py                 (the one clock every route reads)
 ├── notifications/               (email notification engine)
 │   ├── events.py                (event types, recipient rules, queueing hooks)
 │   ├── queue.py                 (claims, leases, retries, recovery)
 │   ├── worker.py                (the delivery loop)
+│   ├── heartbeat.py             (worker status file for monitoring)
 │   ├── transport.py             (local sink and SMTP)
 │   ├── render.py                (plain-text messages)
 │   ├── settings.py              (environment variables)
@@ -530,6 +540,9 @@ it-helpdesk-ticketing-system/
 ├── database.py
 ├── accounts.py                  (account administration rules and audit events)
 ├── audit_archive.py             (audit archive export and verification)
+├── backups.py                   (encrypted SQLite backups, restore, drill)
+├── secret_files.py              (secrets from NAME_FILE files)
+├── deploy/                      (Gunicorn, Caddy, Redis and systemd examples)
 ├── sla.py
 ├── sla_storage.py
 ├── csv_export.py
@@ -1181,6 +1194,8 @@ SMTP delivery is configured only through environment variables (`NOTIFICATION_DE
 
 ## Production Security Configuration
 
+Running, backing up, monitoring and recovering a production server is covered in **[docs/PRODUCTION_OPERATIONS.md](docs/PRODUCTION_OPERATIONS.md)**; this section covers the security settings themselves.
+
 The application chooses its security behaviour from `APP_ENV`. Local development needs no new settings. **This project has not been deployed publicly**, and the deployment steps below are requirements to meet first.
 
 ### Development compared with production
@@ -1210,6 +1225,10 @@ Set these in the service environment. `.env` is deliberately ignored in producti
 | `TRUSTED_HOSTS` | Yes | `helpdesk.example.org` | Comma-separated exact hostnames, with no scheme, port or wildcard |
 | `TRUSTED_PROXY_COUNT` | Behind a proxy | `1` | Number of reverse proxies in front of the app (0 to 5) |
 | `TRUSTED_PROXY_IPS` | Behind a proxy | `127.0.0.1` | Comma-separated proxy IPs or CIDR ranges |
+| `RATELIMIT_STORAGE_URI` | Yes | `redis+unix://helpdesk:…@/run/redis/redis-server.sock` | Shared rate-limit counters for every Gunicorn worker. `memory://` only together with `RATELIMIT_SINGLE_PROCESS=1` and one worker; plain `redis://` only to this machine |
+| `HELPDESK_DATABASE_PATH` | Recommended | `/var/lib/helpdesk/helpdesk.db` | Absolute database path outside the code folder |
+
+Every secret (`SECRET_KEY`, `RATELIMIT_STORAGE_URI`, `NOTIFICATION_SMTP_PASSWORD`) can instead be given as `NAME_FILE`, the path of a file holding it, which is how the systemd units pass them (`LoadCredential=`). In production such a file must not be readable by other accounts. The complete list, including backup and monitoring settings, is in [docs/PRODUCTION_OPERATIONS.md](docs/PRODUCTION_OPERATIONS.md#4-environment-variables-and-secrets).
 
 ### Secure cookies and sessions
 
@@ -1285,9 +1304,9 @@ Before any real deployment:
 
 1. Terminate HTTPS at a reverse proxy and redirect HTTP to HTTPS.
 2. **Bind the app to a private address** such as `127.0.0.1:8000`, and firewall it so only the proxy can connect. With a loopback proxy address, every local process is trusted as a proxy.
-3. Use a production WSGI server. None is included yet.
-4. Run **one worker process**, or move rate limiting to shared storage such as Redis, because the current counters are per process.
-5. Back up the database and run `flask --app app db-status` before starting.
+3. Use the production WSGI server configuration: Gunicorn with `deploy/gunicorn.conf.py` and `wsgi:application`.
+4. Point `RATELIMIT_STORAGE_URI` at Redis, so every worker shares the sign-in limit. Production refuses to start without it, and when Redis is unreachable sign-in is refused (503) rather than left unlimited.
+5. Configure encrypted backups, the off-server copy and the restoration drill, and run `flask --app app db-status` before starting.
 6. Change any old demonstration passwords.
 
 ### Security testing
@@ -1503,8 +1522,9 @@ Security improvements are ongoing.
 ### Deployment
 
 - [x] Prepare production configuration
-- [ ] Configure Gunicorn
-- [ ] Configure Nginx and HTTPS
+- [x] Configure Gunicorn (prepared and tested locally; not deployed)
+- [x] Prepare a Caddy HTTPS reverse-proxy configuration (not yet validated with Caddy or deployed)
+- [x] Shared Redis rate limiting, encrypted backups, restoration drill, monitoring (see docs/PRODUCTION_OPERATIONS.md)
 - [ ] Perform security review
 - [ ] Deploy to a suitable Linux hosting environment
 

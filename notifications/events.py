@@ -169,6 +169,46 @@ def _queue(conn, *, source, event_type, recipient, reason, payload,
     return cursor.rowcount
 
 
+# Audit actions written by the notification code. accounts.AUDIT_ACTIONS
+# includes them; they are defined here because accounts.py imports this
+# module, not the other way round.
+QUEUE_FAILED_ACTION = "notification_queue_failed"
+REQUEUED_ACTION = "notification_requeued"
+
+# The actor recorded for something the application did by itself
+SYSTEM_ACTOR = "system"
+
+
+def _record_queue_failure(conn, what, error):
+    """
+    Leave a durable trace of notifications that could not be queued.
+
+    Written to audit_events in the caller's own transaction, so it is
+    saved exactly when the change it belongs to is saved: a change that
+    is later rolled back leaves no false alarm, and one that is committed
+    always leaves the record, which monitoring ("flask ops-check") and
+    the administrator's audit log then show. Only a short description of
+    the change (for example "new ticket 12") and the error type are
+    stored, never ticket text or addresses. If even this fails, the log
+    line above is all that remains; the caller's change is unaffected.
+    """
+
+    conn.execute("SAVEPOINT record_queue_failure")
+
+    try:
+        conn.execute(
+            "INSERT INTO audit_events (actor, action, new_value) "
+            "VALUES (?, ?, ?)",
+            (SYSTEM_ACTOR, QUEUE_FAILED_ACTION,
+             f"{what} ({type(error).__name__})"[:200])
+        )
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT record_queue_failure")
+        logger.exception("The queueing failure could not be recorded")
+    finally:
+        conn.execute("RELEASE SAVEPOINT record_queue_failure")
+
+
 def _guarded(conn, what, work):
     """
     Run `work()` inside a savepoint of the caller's transaction.
@@ -183,13 +223,14 @@ def _guarded(conn, what, work):
     try:
         queued = work()
 
-    except Exception:
+    except Exception as error:
         conn.execute("ROLLBACK TO SAVEPOINT queue_notifications")
         conn.execute("RELEASE SAVEPOINT queue_notifications")
         logger.exception(
             "Notifications for %s could not be queued; the change itself "
             "was saved without them", what
         )
+        _record_queue_failure(conn, what, error)
         return 0
 
     conn.execute("RELEASE SAVEPOINT queue_notifications")

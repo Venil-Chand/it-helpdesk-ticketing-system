@@ -11,12 +11,15 @@ Order matters, and is the same as before the application factory:
     before each request:  HTTPS check -> CSRF -> rate limit -> account
     after each request:   security headers (on every response)
 
+Rate-limit counters are kept where RATELIMIT_STORAGE_URI says: Redis in
+production, so that every Gunicorn worker sees the same counts.
+
 Each application gets its own CSRFProtect and Limiter objects. A Limiter
 keeps its counters and settings on the object, so sharing one between
 two applications would make them share rate-limit counters.
 """
 
-from flask import request
+from flask import current_app, request
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_wtf.csrf import CSRFProtect
@@ -41,6 +44,65 @@ ROUTE_LIMITS = {
     "auth.login": LOGIN_RATE_LIMIT,
     "account.change_password": PASSWORD_CHANGE_RATE_LIMIT,
 }
+
+
+# Every counter this application writes to Redis starts with this, so a
+# Redis server shared with something else never mixes their keys
+RATE_LIMIT_KEY_PREFIX = "helpdesk"
+
+# Seconds to wait for Redis. Short, so an outage answers 503 quickly
+# instead of holding a Gunicorn worker until its timeout.
+REDIS_TIMEOUT_SECONDS = 1.0
+
+try:
+    from redis.exceptions import RedisError as _RedisError
+    REDIS_ERRORS = _RedisError
+except ImportError:  # Redis support is optional in development
+    REDIS_ERRORS = None
+
+RATE_LIMIT_UNAVAILABLE_MESSAGE = (
+    "Signing in and changing passwords are temporarily unavailable. "
+    "Please try again in a few minutes.\n"
+)
+
+
+def _storage_options(settings):
+    if settings.rate_limit_storage_kind != security_config.REDIS:
+        return {}
+
+    return {
+        "socket_connect_timeout": REDIS_TIMEOUT_SECONDS,
+        "socket_timeout": REDIS_TIMEOUT_SECONDS,
+        "health_check_interval": 30,
+    }
+
+
+def rate_limit_storage_unavailable(error):
+    """
+    Refuse a rate-limited request when its counter cannot be checked.
+
+    Failing closed: an attempt that cannot be counted is not processed,
+    so a Redis outage never turns into unlimited password guessing. Only
+    the error type is logged; the Redis address and password are not.
+    """
+
+    current_app.logger.error(
+        "Rate-limit storage unavailable (%s); request refused",
+        type(error).__name__
+    )
+
+    response = plain_error(RATE_LIMIT_UNAVAILABLE_MESSAGE, 503)
+    response.headers["Retry-After"] = "30"
+    return response
+
+
+def rate_limit_storage_reachable(app):
+    """True if this application's rate-limit storage answers right now."""
+
+    try:
+        return bool(get_limiter(app).storage.check())
+    except Exception:
+        return False
 
 
 def get_settings(app):
@@ -90,13 +152,24 @@ def register_security(app, settings):
     # CSRF protection for every POST, in every blueprint
     CSRFProtect(app)
 
-    # Rate limiting. In-memory storage is per process and is meant for a
-    # single-process deployment.
+    # Rate limiting. The storage comes from RATELIMIT_STORAGE_URI, which
+    # security_config has already validated: Redis shared by every
+    # worker in production, or memory:// for one process. There is no
+    # in-memory fallback, so if Redis stops answering the limited routes
+    # are refused (see rate_limit_storage_unavailable) rather than left
+    # unprotected.
     app.extensions[LIMITER_KEY] = Limiter(
         key_func=get_remote_address,
         app=app,
-        storage_uri="memory://"
+        storage_uri=settings.rate_limit_storage_uri,
+        storage_options=_storage_options(settings),
+        key_prefix=RATE_LIMIT_KEY_PREFIX,
+        in_memory_fallback_enabled=False,
+        swallow_errors=False,
     )
+
+    if REDIS_ERRORS:
+        app.register_error_handler(REDIS_ERRORS, rate_limit_storage_unavailable)
 
     @app.after_request
     def add_security_headers(response):

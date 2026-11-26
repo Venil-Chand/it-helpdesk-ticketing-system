@@ -13,14 +13,19 @@ Package layout:
     __init__.py        create_app(): configuration and wiring (this file)
     security.py        HTTPS, CSRF, rate limiting, proxy, security headers
     errors.py          plain-text error responses
+    logging_setup.py   request IDs and JSON log lines for production
+    readiness.py       startup and readiness checks (no secrets shown)
     auth.py            blueprint "auth": login, logout, session checks
     dashboard.py       blueprint "dashboard": ticket list and SLA monitoring
     tickets.py         blueprint "tickets": create, view, update, comment
     reports.py         blueprint "reports": CSV export
     account.py         blueprint "account": change your own password
     admin.py           blueprint "admin": account administration, audit log
+    health.py          blueprint "health": /healthz and /readyz
     ticket_filters.py  filters and values shared by several blueprints
     cli.py             flask db-status / init-db / assignment-audit
+    backup_cli.py      flask backup-create / -verify / -drill / -restore ...
+    ops_cli.py         flask ops-check: one monitoring check for everything
     notification_cli.py  flask notifications-send / -status / set-email
     clock.py           the single clock every route reads
 """
@@ -34,9 +39,10 @@ from flask import Flask
 import security_config
 from sla_storage import parse_stored_utc
 
-from . import account, admin, auth, dashboard, reports, tickets
+from . import account, admin, auth, dashboard, health, reports, tickets
 from .cli import register_commands
 from .errors import register_error_handlers
+from .logging_setup import register_request_ids
 from .security import apply_route_limits, register_security
 
 # templates/ and static/ live in the project folder, next to app.py
@@ -50,6 +56,7 @@ BLUEPRINTS = (
     reports.bp,
     account.bp,
     admin.bp,
+    health.bp,
 )
 
 
@@ -94,6 +101,10 @@ def create_app(environ=None, config=None):
 
     if config:
         app.config.update(config)
+
+    # Registered first, so even a request refused by the checks below
+    # has an ID in its log lines and response
+    register_request_ids(app)
 
     # Application-wide protection. These are attached to the application,
     # not to a blueprint, so they cover every route exactly once.

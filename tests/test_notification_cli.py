@@ -7,12 +7,14 @@ No SMTP server is contacted.
 """
 
 import os
+import tempfile
 import unittest
 from unittest.mock import patch
 
 import migrations
 from app import app
 from helpdesk import notification_cli
+from notifications import heartbeat
 from helpdesk.security import get_settings
 
 import database as db
@@ -40,6 +42,12 @@ class CliTestCase(NotificationTestCase):
             del os.environ[name]
 
         os.environ["NOTIFICATION_SINK_DIR"] = self.sink_dir
+
+        # The --loop worker writes a heartbeat; keep it out of the project
+        state = tempfile.TemporaryDirectory()
+        self.addCleanup(state.cleanup)
+        os.environ["HELPDESK_STATE_DIR"] = state.name
+        self.state_dir = state.name
 
     def run_command(self, *args, env=None):
         with patch.dict(os.environ, env or {}):
@@ -108,7 +116,8 @@ class TestSend(CliTestCase):
         self.assertIn("not up to date", result.output)
 
     def test_loop_stops_on_signal(self):
-        def stop_soon(self_, *, interval, limit, stop_event, on_summary):
+        def stop_soon(self_, *, interval, limit, stop_event, on_summary,
+                      heartbeat):
             stop_event.set()
 
         with patch("notifications.worker.NotificationWorker.run_forever",
@@ -118,6 +127,11 @@ class TestSend(CliTestCase):
 
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertIn("Worker stopped.", result.output)
+
+        # The heartbeat says so, for monitoring
+        status = heartbeat.read_status(
+            os.path.join(self.state_dir, heartbeat.FILE_NAME))
+        self.assertEqual(status["state"], heartbeat.STOPPED)
 
 
 class TestStatus(CliTestCase):

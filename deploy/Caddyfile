@@ -1,0 +1,100 @@
+# Caddy configuration for the helpdesk (Caddy 2.7 or newer).
+#
+# Caddy is the only program visitors talk to. It:
+#   * obtains and renews the HTTPS certificate automatically;
+#   * redirects http:// to https://;
+#   * forwards each request to Gunicorn on 127.0.0.1:8000, adding
+#     X-Forwarded-For (the visitor's address) and X-Forwarded-Proto
+#     (https), which the application believes because the connection
+#     comes from 127.0.0.1 (TRUSTED_PROXY_COUNT=1, TRUSTED_PROXY_IPS=
+#     127.0.0.1);
+#   * refuses bodies over 1 MiB before they reach Python.
+#
+# Replace helpdesk.example.org with the real name (the same value as
+# TRUSTED_HOSTS) and admin@example.org with an address that receives
+# certificate-expiry warnings. Validate before reloading:
+#
+#     caddy validate --config /etc/caddy/Caddyfile
+#     systemctl reload caddy
+#
+# CI checks this file with the real Caddy (caddy fmt, caddy adapt
+# --validate, caddy validate) and runs a test copy of it in front of
+# Gunicorn (.github/scripts/caddy-proxy-check.sh). Still validate it on
+# the server after editing the names, before reloading.
+{
+	email admin@example.org
+
+	# Caddy's admin API stays on this machine only (the default, stated
+	# here so nobody changes it by accident)
+	admin localhost:2019
+
+	servers {
+		# Slow-client protection: a visitor must send headers and body
+		# promptly. Writes allow for a CSV export.
+		timeouts {
+			read_header 10s
+			read_body 30s
+			write 60s
+			idle 2m
+		}
+
+		# Caddy is the first hop: never believe X-Forwarded-* from the
+		# internet. (No trusted_proxies here on purpose.)
+	}
+}
+
+helpdesk.example.org {
+	# Bodies larger than the application's own 1 MiB limit are refused here
+	request_body {
+		max_size 1MB
+	}
+
+	# Readiness details are for this server's monitoring only. The
+	# liveness check /healthz stays public so an external uptime monitor
+	# can use it; it reveals nothing.
+	@internal_only {
+		path /readyz
+		not remote_ip 127.0.0.1 ::1
+	}
+	respond @internal_only 404
+
+	reverse_proxy 127.0.0.1:8000 {
+		# Caddy sets X-Forwarded-For and X-Forwarded-Proto itself and,
+		# with no trusted_proxies configured, replaces any value the
+		# visitor sent. X-Forwarded-Host is removed: the application
+		# checks the real Host header against TRUSTED_HOSTS instead.
+		header_up -X-Forwarded-Host
+
+		# Give up on a Gunicorn that does not answer (it restarts stuck
+		# workers after 30 s); the visitor sees 502/504, not a hang
+		transport http {
+			dial_timeout 5s
+			response_header_timeout 35s
+		}
+
+		# Passive health check: stop sending to a backend that keeps
+		# failing, for a short while
+		fail_duration 10s
+	}
+
+	# The application sets its own security headers (CSP, HSTS, ...).
+	# Only the server banner is removed here.
+	header -Server
+
+	# Access log without query strings (they can contain search text).
+	# Caddy already omits Cookie and Authorization values by default.
+	log {
+		output file /var/log/caddy/helpdesk-access.log {
+			roll_size 50MiB
+			roll_keep 14
+			roll_keep_for 336h
+		}
+		format filter {
+			wrap json
+			fields {
+				request>uri regexp \?.*$ ""
+				request>headers>Referer delete
+			}
+		}
+	}
+}

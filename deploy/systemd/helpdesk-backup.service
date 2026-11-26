@@ -1,0 +1,54 @@
+# Nightly encrypted backup, off-server copy and retention.
+# Started by helpdesk-backup.timer. EXAMPLE ONLY - review before installing.
+#
+# Run by hand:   sudo systemctl start helpdesk-backup
+# See results:   journalctl -u helpdesk-backup
+
+[Unit]
+Description=IT Helpdesk database backup
+OnFailure=helpdesk-alert@%n.service
+
+[Service]
+Type=oneshot
+User=helpdesk
+Group=helpdesk
+WorkingDirectory=/opt/helpdesk/current
+EnvironmentFile=/etc/helpdesk/helpdesk.env
+
+# The key arrives as a private file; it never sits in the backup folder
+LoadCredential=backup-key:/etc/helpdesk/credentials/backup-key
+LoadCredential=secret-key:/etc/helpdesk/credentials/secret-key
+LoadCredential=redis-uri:/etc/helpdesk/credentials/redis-uri
+Environment=HELPDESK_BACKUP_KEY_FILE=%d/backup-key
+Environment=SECRET_KEY_FILE=%d/secret-key
+Environment=RATELIMIT_STORAGE_URI_FILE=%d/redis-uri
+
+ExecStart=/opt/helpdesk/current/deploy/scripts/run-backup.sh
+
+# A backup of a small SQLite database takes seconds; anything near this
+# limit means something is wrong
+TimeoutStartSec=15min
+
+# Low priority, so the web service stays responsive
+Nice=10
+IOSchedulingClass=idle
+
+UMask=0077
+StateDirectory=helpdesk
+# Must already exist, owned by helpdesk, mode 0700 (created during setup;
+# see docs/PRODUCTION_OPERATIONS.md)
+ReadWritePaths=/var/backups/helpdesk
+# Uncomment once the off-server location is mounted:
+# ReadWritePaths=/mnt/helpdesk-offsite
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=

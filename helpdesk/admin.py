@@ -236,7 +236,7 @@ def audit_log():
     """
     Show the most recent audit events.
 
-    ?kind=accounts or ?kind=logins narrows the list. Any other value is
+    ?kind=accounts, ?kind=logins or ?kind=operations narrows the list. Any other value is
     ignored (allow list), so it can never reach the SQL.
     """
 

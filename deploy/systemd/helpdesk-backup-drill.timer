@@ -1,0 +1,12 @@
+# Weekly restoration drill, Sunday about 04:00, after that night's backup.
+
+[Unit]
+Description=Weekly IT Helpdesk restoration drill
+
+[Timer]
+OnCalendar=Sun *-*-* 04:00:00
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

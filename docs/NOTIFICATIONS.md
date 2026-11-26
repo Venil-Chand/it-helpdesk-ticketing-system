@@ -264,6 +264,7 @@ prints only whether credentials are set.
 | `flask --app app notifications-send` | One run: delivers up to `--limit` (default 100) due notifications, then exits. Exit 0 when done; **2** if delivery was paused because the server was unreachable or refused the sign-in; 1 for configuration or schema problems. | Yes (queue rows and attempt history only) |
 | `flask --app app notifications-send --loop [--interval 30]` | Runs until SIGTERM or Ctrl+C, finishing the current message first. Waits `--interval` seconds when idle and backs off (doubling up to 15 minutes) while the server is unavailable. | Yes |
 | `flask --app app notifications-status` | Counts per status, oldest pending row, last 10 permanent failures (id, event, username, sanitised error). No addresses or content. | Never |
+| `flask --app app notifications-requeue ID... --reason TEXT [--yes]` | Queues a new copy of each permanently **failed** notification, after the cause is fixed. The failed row and its history are kept; the copy gets fresh attempts and is checked against the recipient again at delivery. At most 3 requeues per original; each one is an audit event (`notification_requeued`) naming the operating-system account and the reason. Asks for confirmation unless `--yes`. | Yes (one new row + audit event each) |
 | `flask --app app notifications-check-config` | Validates the settings without connecting to anything. | Never |
 | `flask --app app set-email USERNAME ADDRESS` / `--clear` | Sets or removes an account's notification address (audited). | Yes (one account) |
 
@@ -376,36 +377,20 @@ ambiguous failures then fail permanently instead of being retried.
 4. **Set addresses** with `flask --app app set-email` for the pilot accounts.
 5. **Dry run first**: `NOTIFICATION_DELIVERY=local` in production writes
    simulated messages only. Inspect them, then switch to `smtp`.
-6. **Run the worker under supervision**, as the same operating-system account
-   that owns the database, for example:
-
-   ```ini
-   # /etc/systemd/system/helpdesk-notifications.service
-   [Unit]
-   Description=IT Helpdesk notification worker
-   After=network-online.target
-
-   [Service]
-   User=helpdesk
-   WorkingDirectory=/srv/helpdesk
-   EnvironmentFile=/etc/helpdesk/notifications.env   # mode 0600
-   ExecStartPre=/srv/helpdesk/.venv/bin/flask --app app db-status
-   ExecStart=/srv/helpdesk/.venv/bin/flask --app app notifications-send --loop --interval 30
-   Restart=on-failure
-   RestartSec=30
-   KillSignal=SIGTERM
-   TimeoutStopSec=150
-
-   [Install]
-   WantedBy=multi-user.target
-   ```
-
-   `TimeoutStopSec` should exceed the time one delivery can take (several
-   SMTP round trips of up to `NOTIFICATION_SMTP_TIMEOUT` each). Alternatively,
-   run `notifications-send` (without `--loop`) from a timer or cron job and
-   alert on exit status 2.
-7. **Monitor** `flask --app app notifications-status`: a growing `pending`
-   count or new `failed` rows need attention. Logs go to stderr (journald).
+6. **Run the worker under supervision** with
+   `deploy/systemd/helpdesk-notifications.service`: restart on failure (at
+   most 5 starts in 10 minutes), SIGTERM honoured between messages
+   (`TimeoutStopSec=150`), secrets through `LoadCredential=`
+   (`NOTIFICATION_SMTP_PASSWORD_FILE`), and the settings validated by
+   `ExecStartPre`. A message interrupted by a crash is recovered after its
+   lease and retried after the normal backoff, never immediately. Details:
+   [PRODUCTION_OPERATIONS.md](PRODUCTION_OPERATIONS.md#8-notification-processing).
+7. **Monitor** with `flask --app app ops-check` (run every 5 minutes by
+   `helpdesk-ops-check.timer`): backlog age, interrupted deliveries,
+   permanent failures, queueing failures, and the worker's heartbeat file
+   (`$HELPDESK_STATE_DIR/notification-worker.json`), which turns a dead or
+   stuck worker into a critical alert. `notifications-status` lists recent
+   failures. Logs are JSON lines on stderr (journald) in production.
 8. Running more than one worker is safe but unnecessary for a helpdesk.
 
 ---
@@ -418,8 +403,13 @@ ambiguous failures then fail permanently instead of being retried.
   message, not that it reached the inbox. Bounces are not processed.
 * **No web interface** for email addresses or for the queue; both are managed
   with CLI commands on the server.
-* **No manual requeue command.** A permanently failed notification is not
-  retried; after fixing the cause an operator can only change the row with SQL.
+* **Requeue is by id only.** `notifications-requeue` takes explicit ids
+  (from `notifications-status`); there is no "requeue everything that
+  failed" option, on purpose.
+* **Queueing failures are recorded, not repaired.** If notifications for a
+  change cannot be queued, the change is saved without them and an audit
+  event `notification_queue_failed` is written in the same transaction;
+  the missing notifications are not recreated automatically.
 * **No retention policy** for `notifications`, `notification_attempts` or the
   local sink folder yet; rows are kept indefinitely.
 * **No notification preferences or opt-out.** Every rule applies to everyone.

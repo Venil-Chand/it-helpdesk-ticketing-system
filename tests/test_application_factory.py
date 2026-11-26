@@ -77,6 +77,12 @@ ACCOUNT_ROUTES = {
     ("/admin/audit", frozenset({"GET"}), "admin.audit_log"),
 }
 
+# Health checks for monitoring (Package 3), listed exactly as well
+HEALTH_ROUTES = {
+    ("/healthz", frozenset({"GET"}), "health.healthz"),
+    ("/readyz", frozenset({"GET"}), "health.readyz"),
+}
+
 # Endpoint names used before the blueprints; none may still resolve
 OLD_ENDPOINTS = (
     "index", "login", "logout", "new_ticket", "ticket_detail",
@@ -85,6 +91,8 @@ OLD_ENDPOINTS = (
 
 # The application-wide hooks, in the order they must run
 EXPECTED_BEFORE_REQUEST = [
+    # First, so every request (even a refused one) has an ID in its logs
+    "assign_request_id",
     "require_https_in_production",
     "csrf_protect",
     "_check_request_limit",
@@ -321,7 +329,8 @@ class BlueprintRegistrationTests(unittest.TestCase):
     def test_expected_blueprints_are_registered(self):
         self.assertEqual(
             set(self.app.blueprints),
-            {"auth", "dashboard", "tickets", "reports", "account", "admin"}
+            {"auth", "dashboard", "tickets", "reports", "account", "admin",
+             "health"}
         )
         self.assertEqual(len(BLUEPRINTS), len(self.app.blueprints))
 
@@ -332,7 +341,8 @@ class BlueprintRegistrationTests(unittest.TestCase):
             for rule in self.app.url_map.iter_rules()
         }
 
-        self.assertEqual(actual, EXPECTED_ROUTES | ACCOUNT_ROUTES)
+        self.assertEqual(actual,
+                         EXPECTED_ROUTES | ACCOUNT_ROUTES | HEALTH_ROUTES)
 
     def test_old_endpoint_names_no_longer_resolve(self):
         with self.app.test_request_context():
@@ -378,7 +388,17 @@ class BlueprintRegistrationTests(unittest.TestCase):
         ]
 
         self.assertEqual(names, EXPECTED_BEFORE_REQUEST)
-        self.assertEqual(len(self.app.after_request_funcs[None]), 2)
+
+        # The request ID header, the security headers and the rate
+        # limiter's headers
+        # (Flask-Limiter registers its hook as a functools.partial)
+        self.assertEqual(
+            [getattr(hook, "__name__", None)
+             or getattr(hook, "func").__name__
+             for hook in self.app.after_request_funcs[None]],
+            ["add_request_id_header", "__inject_headers",
+             "add_security_headers"]
+        )
 
         # No blueprint adds hooks of its own that could run twice or
         # cover only part of the site

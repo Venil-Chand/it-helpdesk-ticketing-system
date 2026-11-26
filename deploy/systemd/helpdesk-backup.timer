@@ -1,0 +1,15 @@
+# Nightly backup at about 02:15 server time.
+#     sudo systemctl enable --now helpdesk-backup.timer
+#     systemctl list-timers helpdesk-*
+
+[Unit]
+Description=Nightly IT Helpdesk database backup
+
+[Timer]
+OnCalendar=*-*-* 02:15:00
+# Spread the start a little; run at the next boot if the server was off
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

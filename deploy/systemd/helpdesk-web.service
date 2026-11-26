@@ -1,0 +1,91 @@
+# The helpdesk web application, run by Gunicorn behind Caddy.
+#
+# EXAMPLE ONLY - review the paths, then install on the server with:
+#     sudo cp deploy/systemd/helpdesk-web.service /etc/systemd/system/
+#     sudo systemctl daemon-reload
+#     sudo systemctl enable --now helpdesk-web
+#
+# Layout assumed (see docs/PRODUCTION_OPERATIONS.md):
+#     /opt/helpdesk/current          symlink to the active release
+#     /opt/helpdesk/current/.venv    that release's virtual environment
+#     /etc/helpdesk/helpdesk.env     non-secret settings (0640 root:helpdesk)
+#     /etc/helpdesk/credentials/     secrets (0600 root:root), passed in
+#                                    with LoadCredential= below
+#     /var/lib/helpdesk/helpdesk.db  the database (StateDirectory=)
+
+[Unit]
+Description=IT Helpdesk web application (Gunicorn)
+Documentation=file:///opt/helpdesk/current/docs/PRODUCTION_OPERATIONS.md
+After=network.target redis-server.service
+Wants=redis-server.service
+
+# Stop restarting after 5 failed starts in 5 minutes: a configuration
+# error must be fixed by a person, not retried forever
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+# Gunicorn tells systemd when it is ready to accept connections
+Type=notify
+NotifyAccess=main
+
+User=helpdesk
+Group=helpdesk
+WorkingDirectory=/opt/helpdesk/current
+
+EnvironmentFile=/etc/helpdesk/helpdesk.env
+
+# Secrets arrive as private files in $CREDENTIALS_DIRECTORY (%d), readable
+# only by this service, never as environment variables
+LoadCredential=secret-key:/etc/helpdesk/credentials/secret-key
+LoadCredential=redis-uri:/etc/helpdesk/credentials/redis-uri
+Environment=SECRET_KEY_FILE=%d/secret-key
+Environment=RATELIMIT_STORAGE_URI_FILE=%d/redis-uri
+
+# Refuse to start on an unmigrated database; the message lands in the journal
+ExecStartPre=/opt/helpdesk/current/.venv/bin/flask --app app db-status
+ExecStart=/opt/helpdesk/current/.venv/bin/gunicorn --config deploy/gunicorn.conf.py wsgi:application
+
+# "systemctl reload" replaces the workers gracefully (no new code is
+# loaded with preload_app; use restart after a deployment)
+ExecReload=/bin/kill -s HUP $MAINPID
+
+# SIGTERM to Gunicorn, which lets workers finish current requests for up
+# to graceful_timeout (30 s); anything left is killed after 40 s
+KillMode=mixed
+TimeoutStopSec=40
+
+Restart=on-failure
+RestartSec=5
+
+# Files the service creates are private to it
+UMask=0077
+
+# The database lives here; created owned by helpdesk, mode 0700
+StateDirectory=helpdesk
+StateDirectoryMode=0700
+
+# --- Sandboxing: the service can write only its state directory ---
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+# Unix sockets (Redis, journal) and loopback TCP (Caddy -> Gunicorn)
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

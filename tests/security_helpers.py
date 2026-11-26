@@ -37,16 +37,30 @@ TEST_SECRET_KEY = secrets.token_hex(32)
 SECURITY_VARIABLES = (
     "APP_ENV",
     "SECRET_KEY",
+    "SECRET_KEY_FILE",
     "FLASK_DEBUG",
     "TRUSTED_HOSTS",
     "TRUSTED_PROXY_COUNT",
     "TRUSTED_PROXY_IPS",
+    "RATELIMIT_STORAGE_URI",
+    "RATELIMIT_STORAGE_URI_FILE",
+    "RATELIMIT_SINGLE_PROCESS",
+    "HELPDESK_DATABASE_PATH",
 )
+
+# Production must name its rate-limit storage. These in-process tests run
+# a single application, so they declare the single-process memory store;
+# the shared Redis store is tested in test_shared_rate_limit.py.
+SINGLE_PROCESS_RATE_LIMITS = {
+    "RATELIMIT_STORAGE_URI": "memory://",
+    "RATELIMIT_SINGLE_PROCESS": "1",
+}
 
 PRODUCTION_ENV = {
     "APP_ENV": "production",
     "SECRET_KEY": TEST_SECRET_KEY,
     "TRUSTED_HOSTS": "helpdesk.test",
+    **SINGLE_PROCESS_RATE_LIMITS,
 }
 
 PROXIED_PRODUCTION_ENV = {

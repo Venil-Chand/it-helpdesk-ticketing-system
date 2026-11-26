@@ -55,13 +55,20 @@ ADMIN_ROLE = "admin"
 
 # These never need the account: static files are public, and logging out
 # must keep working even while the database is unavailable.
-ACCOUNT_CHECK_EXEMPT_ENDPOINTS = frozenset({"static", "auth.logout"})
+ACCOUNT_CHECK_EXEMPT_ENDPOINTS = frozenset({
+    "static", "auth.logout",
+    # Health checks never look at the visitor's account, so a database
+    # problem shows up in /readyz's answer rather than as a 503 here
+    "health.healthz", "health.readyz",
+})
 
 # The only pages an account that must change its password may use
 PASSWORD_CHANGE_ALLOWED_ENDPOINTS = frozenset({
     "account.change_password",
     "auth.logout",
     "static",
+    "health.healthz",
+    "health.readyz",
 })
 
 # Values the current session format stores, and older ones it replaces

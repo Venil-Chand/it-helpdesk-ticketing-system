@@ -1,0 +1,86 @@
+# The notification worker: delivers queued notifications.
+# EXAMPLE ONLY - review before installing.
+#
+# The web application never sends email; it only adds rows to the
+# notifications table in the same transaction as the ticket change (the
+# transactional outbox). This service delivers them.
+#
+# Safe by default: /etc/helpdesk/helpdesk.env sets NOTIFICATION_DELIVERY=
+# local, which writes simulated messages to NOTIFICATION_SINK_DIR and
+# sends nothing. Switch to smtp only after the provider decision.
+#
+#     sudo systemctl enable --now helpdesk-notifications
+#     journalctl -u helpdesk-notifications -f
+#     flask --app app notifications-status
+
+[Unit]
+Description=IT Helpdesk notification worker
+After=network-online.target helpdesk-web.service
+Wants=network-online.target
+OnFailure=helpdesk-alert@%n.service
+
+# A worker that crashes again and again needs a person, not a loop:
+# after 5 failed starts within 10 minutes systemd stops trying (and the
+# alert unit runs)
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=helpdesk
+Group=helpdesk
+WorkingDirectory=/opt/helpdesk/current
+EnvironmentFile=/etc/helpdesk/helpdesk.env
+
+LoadCredential=secret-key:/etc/helpdesk/credentials/secret-key
+LoadCredential=redis-uri:/etc/helpdesk/credentials/redis-uri
+Environment=SECRET_KEY_FILE=%d/secret-key
+Environment=RATELIMIT_STORAGE_URI_FILE=%d/redis-uri
+# Only once SMTP is configured (create the file first):
+# LoadCredential=smtp-password:/etc/helpdesk/credentials/smtp-password
+# Environment=NOTIFICATION_SMTP_PASSWORD_FILE=%d/smtp-password
+
+# Validate the delivery settings before starting (connects to nothing)
+ExecStartPre=/opt/helpdesk/current/.venv/bin/flask --app app notifications-check-config
+ExecStart=/opt/helpdesk/current/.venv/bin/flask --app app notifications-send --loop --interval 30
+
+# Crash recovery: restart after a pause. A message whose delivery was
+# interrupted by the crash is recovered when its lease expires
+# (NOTIFICATION_LEASE_SECONDS, default 300) and keeps the attempt it used,
+# so it is retried at most NOTIFICATION_MAX_ATTEMPTS times in total.
+Restart=on-failure
+RestartSec=30
+
+# SIGTERM is honoured between messages. One delivery can take up to about
+# 4 x NOTIFICATION_SMTP_TIMEOUT (default 20 s), so allow that and more
+# before systemd kills the process.
+KillSignal=SIGTERM
+TimeoutStopSec=150
+
+UMask=0077
+StateDirectory=helpdesk
+StateDirectoryMode=0700
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+# Unix sockets, and TCP for the SMTP server
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target
