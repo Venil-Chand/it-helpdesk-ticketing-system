@@ -17,10 +17,10 @@
 #     caddy validate --config /etc/caddy/Caddyfile
 #     systemctl reload caddy
 #
-# This file was written for review and has NOT been run by "caddy
-# validate" in the development environment, because no Caddy binary was
-# available there. Validate it on the server before first use.
-
+# CI checks this file with the real Caddy (caddy fmt, caddy adapt
+# --validate, caddy validate) and runs a test copy of it in front of
+# Gunicorn (.github/scripts/caddy-proxy-check.sh). Still validate it on
+# the server after editing the names, before reloading.
 {
 	email admin@example.org
 
