@@ -23,6 +23,20 @@ jobs:
     # CI-only key, not used for production
     env:
       SECRET_KEY: ci-testing-key-not-for-production
+      # A throwaway Redis for the shared rate-limit tests (emptied by them)
+      HELPDESK_TEST_REDIS_URL: redis://127.0.0.1:6379/15
+
+    # Disposable Redis, reachable only from this job's runner
+    services:
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - 127.0.0.1:6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
 
     steps:
       # Step 1: Download repository code
@@ -51,7 +65,7 @@ jobs:
       # Step 5: Check Python syntax
       - name: Check Python syntax
         run: |
-          python -m compileall -q accounts.py app.py audit_archive.py csv_export.py database.py migrations.py proxy_trust.py security_config.py setup_accounts.py sla.py sla_storage.py validation.py helpdesk notifications scripts
+          python -m compileall -q accounts.py app.py audit_archive.py csv_export.py database.py migrations.py proxy_trust.py secret_files.py security_config.py setup_accounts.py sla.py sla_storage.py validation.py helpdesk notifications scripts
 
       # Step 6: Run automated tests
       - name: Run unit tests

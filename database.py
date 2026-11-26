@@ -21,11 +21,47 @@ logger = logging.getLogger(__name__)
 # DATABASE CONFIGURATION
 # ---------------------------------------------------
 
-# Location of the SQLite database file
-DB_PATH = os.path.join(
+# Where the database lives when HELPDESK_DATABASE_PATH is not set: next to
+# this file, which is convenient for local development
+DEFAULT_DB_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     "helpdesk.db"
 )
+
+DB_PATH_VARIABLE = "HELPDESK_DATABASE_PATH"
+
+
+class DatabasePathError(RuntimeError):
+    """HELPDESK_DATABASE_PATH is set to something unusable."""
+
+
+def configured_db_path(environ=None):
+    """
+    The database file this process uses.
+
+    Production should set HELPDESK_DATABASE_PATH to a file outside the
+    application's code directory (for example /var/lib/helpdesk/
+    helpdesk.db), so that deploying or rolling back a release never
+    touches the data. It is read from the real environment when this
+    module is first imported; the .env file cannot set it.
+    """
+
+    environ = os.environ if environ is None else environ
+    configured = environ.get(DB_PATH_VARIABLE, "").strip()
+
+    if not configured:
+        return DEFAULT_DB_PATH
+
+    if not os.path.isabs(configured):
+        raise DatabasePathError(
+            f"{DB_PATH_VARIABLE} must be an absolute path."
+        )
+
+    return os.path.normpath(configured)
+
+
+# Location of the SQLite database file
+DB_PATH = configured_db_path()
 
 # Largest page size any caller may request, to keep queries cheap
 MAX_PER_PAGE = 50

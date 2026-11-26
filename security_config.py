@@ -7,6 +7,10 @@ The application runs in one of three environments, chosen by APP_ENV:
     testing      like development, but never reads the .env file
     production   every setting below is checked before traffic is accepted
 
+SECRET_KEY may instead be supplied as SECRET_KEY_FILE, the path of a file
+holding it (see secret_files.py); in production that file must not be
+readable by other accounts.
+
 Problems are reported by variable name only. A rejected value is never
 placed in an error message, because error messages end up in logs.
 """
@@ -14,8 +18,10 @@ placed in an error message, because error messages end up in logs.
 import ipaddress
 import os
 import re
+from urllib.parse import urlsplit
 from dataclasses import dataclass, field
 
+import secret_files
 import validation
 
 DEVELOPMENT = "development"
@@ -100,6 +106,18 @@ MAX_TRUSTED_PROXY_COUNT = 5
 MIN_TRUSTED_PROXY_PREFIX = {4: 8, 6: 32}
 
 
+# Rate-limit storage. Counters in memory:// live inside one process, so
+# several Gunicorn workers would each keep their own and the login limit
+# would be multiplied by the number of workers. Production must therefore
+# name a shared Redis server, or explicitly declare a single process.
+MEMORY = "memory"
+REDIS = "redis"
+MEMORY_STORAGE = "memory://"
+REDIS_SCHEMES = ("redis", "rediss", "redis+unix")
+LOOPBACK_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
+SINGLE_PROCESS_VARIABLE = "RATELIMIT_SINGLE_PROCESS"
+
+
 class ConfigurationError(RuntimeError):
     """The environment is unsafe, so the application must not start."""
 
@@ -120,9 +138,20 @@ class SecuritySettings:
     trusted_proxy_count: int = 0
     trusted_proxy_networks: tuple = ()
 
+    # Where login and password-change attempts are counted. May contain a
+    # Redis password, so it is kept out of repr() like the secret key.
+    rate_limit_storage_uri: str = field(default=MEMORY_STORAGE, repr=False)
+
     @property
     def is_production(self):
         return self.environment == PRODUCTION
+
+    @property
+    def rate_limit_storage_kind(self):
+        """"memory" or "redis": safe to log, unlike the URI itself."""
+
+        return MEMORY if self.rate_limit_storage_uri == MEMORY_STORAGE \
+            else REDIS
 
 
 def should_load_dotenv(environ):
@@ -234,6 +263,114 @@ def _parse_proxy_networks(raw, problems):
     return tuple(dict.fromkeys(networks))
 
 
+def _read_secret_key(environ, production):
+    """Return (key, problem); a file that cannot be used is a problem."""
+
+    try:
+        return secret_files.read_secret(
+            environ, "SECRET_KEY", require_private=production
+        ), None
+    except secret_files.SecretFileError as error:
+        return "", str(error)
+
+
+def _parse_rate_limit_storage(environ, production, problems):
+    """
+    Read RATELIMIT_STORAGE_URI (or RATELIMIT_STORAGE_URI_FILE).
+
+    Accepted:
+        redis+unix:///run/redis/redis-server.sock   recommended
+        redis://[:password@]127.0.0.1:6379/0           this machine only
+        rediss://[:password@]redis.internal:6380/0     TLS, any host
+        memory://   development and testing; production only together
+                    with RATELIMIT_SINGLE_PROCESS=1 and one worker
+
+    There is never a silent fallback: in production a missing or
+    unusable value stops the application from starting.
+    """
+
+    try:
+        uri = secret_files.read_secret(
+            environ, "RATELIMIT_STORAGE_URI", strip=True,
+            require_private=production
+        )
+    except secret_files.SecretFileError as error:
+        problems.append(str(error))
+        return MEMORY_STORAGE
+
+    single_process = environ.get(SINGLE_PROCESS_VARIABLE, "").strip()
+
+    if single_process not in ("", "1"):
+        problems.append(f"{SINGLE_PROCESS_VARIABLE} must be 1 or unset.")
+
+    if not uri:
+        if production:
+            problems.append(
+                "RATELIMIT_STORAGE_URI is required in production. Use a "
+                "Redis server shared by every worker (for example "
+                "redis+unix:///run/redis/redis-server.sock), or set "
+                "RATELIMIT_STORAGE_URI=memory:// together with "
+                f"{SINGLE_PROCESS_VARIABLE}=1 and run a single worker."
+            )
+        return MEMORY_STORAGE
+
+    if uri == MEMORY_STORAGE:
+        if production and single_process != "1":
+            problems.append(
+                "RATELIMIT_STORAGE_URI=memory:// keeps separate counters "
+                "in each worker process, which multiplies the login limit. "
+                f"Use Redis, or set {SINGLE_PROCESS_VARIABLE}=1 and run "
+                "exactly one worker."
+            )
+        return MEMORY_STORAGE
+
+    try:
+        parts = urlsplit(uri)
+        hostname = parts.hostname
+        parts.port  # raises ValueError for a malformed port
+    except ValueError:
+        parts, hostname = None, None
+
+    if parts is None or parts.scheme not in REDIS_SCHEMES:
+        problems.append(
+            "RATELIMIT_STORAGE_URI must start with redis+unix://, "
+            "redis://, rediss:// or memory://."
+        )
+        return MEMORY_STORAGE
+
+    if parts.scheme == "redis+unix":
+        if not parts.path.startswith("/") or parts.netloc.split("@")[-1]:
+            problems.append(
+                "RATELIMIT_STORAGE_URI with redis+unix:// must name an "
+                "absolute socket path, for example "
+                "redis+unix:///run/redis/redis-server.sock"
+            )
+            return MEMORY_STORAGE
+
+    elif not hostname:
+        problems.append("RATELIMIT_STORAGE_URI must include a host name.")
+        return MEMORY_STORAGE
+
+    # Plain redis:// sends the password and the counters unencrypted
+    elif production and parts.scheme == "redis" and (
+        hostname.lower() not in LOOPBACK_HOSTNAMES
+    ):
+        problems.append(
+            "RATELIMIT_STORAGE_URI may use redis:// only for a Redis "
+            "server on this machine (127.0.0.1). Use redis+unix://, or "
+            "rediss:// (TLS) for a separate Redis server."
+        )
+        return MEMORY_STORAGE
+
+    if single_process:
+        problems.append(
+            f"{SINGLE_PROCESS_VARIABLE} applies only to "
+            "RATELIMIT_STORAGE_URI=memory://; remove it when using Redis."
+        )
+
+    return uri
+
+
 def load_settings(environ=None):
     """
     Validate the environment and return its security settings.
@@ -253,12 +390,16 @@ def load_settings(environ=None):
         )
 
     production = environment == PRODUCTION
-    secret_key = environ.get("SECRET_KEY", "")
 
-    if not secret_key:
+    # SECRET_KEY, or SECRET_KEY_FILE naming a file that holds it
+    secret_key, secret_problem = _read_secret_key(environ, production)
+
+    if secret_problem:
+        problems.append(secret_problem)
+    elif not secret_key:
         problems.append(
             "SECRET_KEY is not set. "
-            + ("Supply it through the environment."
+            + ("Supply it through the environment or SECRET_KEY_FILE."
                if production else
                "Copy .env.example to .env and configure a secret key.")
         )
@@ -304,6 +445,10 @@ def load_settings(environ=None):
                 "is set."
             )
 
+    rate_limit_storage_uri = _parse_rate_limit_storage(
+        environ, production, problems
+    )
+
     if problems:
         raise ConfigurationError(
             f"Unsafe {environment} configuration:\n  - "
@@ -316,6 +461,7 @@ def load_settings(environ=None):
         trusted_hosts=trusted_hosts,
         trusted_proxy_count=proxy_count,
         trusted_proxy_networks=proxy_networks,
+        rate_limit_storage_uri=rate_limit_storage_uri,
     )
 
 
