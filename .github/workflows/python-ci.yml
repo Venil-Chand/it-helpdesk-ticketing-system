@@ -107,7 +107,8 @@ jobs:
       # Every check runs for every file, so one run reports all problems
       - name: Validate every Caddyfile
         run: |
-          set -uo pipefail
+          # Actions runs this with "bash -e"; failures are collected instead
+          set +e -uo pipefail
           files=$(git ls-files '*Caddyfile*')
           test -n "$files" || exit 1
           failed=0
