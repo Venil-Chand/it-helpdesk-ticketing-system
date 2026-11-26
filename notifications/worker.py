@@ -160,17 +160,31 @@ class NotificationWorker:
         return summary
 
     def run_forever(self, *, interval, limit=100, stop_event=None,
-                    on_summary=None):
-        """Repeat run_once() until stop_event is set."""
+                    on_summary=None, heartbeat=None):
+        """
+        Repeat run_once() until stop_event is set.
+
+        heartbeat, if given, is called with no arguments before each
+        message and with the run's summary after each run, so a monitor
+        can tell a live worker from a dead or stuck one.
+        """
 
         stop_event = stop_event or threading.Event()
         idle_wait = interval
 
+        def should_stop():
+            if heartbeat is not None:
+                heartbeat()
+            return stop_event.is_set()
+
         while not stop_event.is_set():
-            summary = self.run_once(limit, should_stop=stop_event.is_set)
+            summary = self.run_once(limit, should_stop=should_stop)
 
             if on_summary is not None:
                 on_summary(summary)
+
+            if heartbeat is not None:
+                heartbeat(summary)
 
             if summary.stopped_reason and not stop_event.is_set():
                 # Server unavailable: wait longer each time, up to a cap

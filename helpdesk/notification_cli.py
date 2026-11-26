@@ -6,6 +6,9 @@ Notification commands, run through Flask's CLI:
     flask --app app notifications-status
                                       queue counts and recent failures
                                       (read-only)
+    flask --app app notifications-requeue ID... --reason TEXT
+                                      send failed notifications again
+                                      (audited, bounded)
     flask --app app notifications-check-config
                                       validate the delivery settings
                                       without connecting anywhere
@@ -31,10 +34,11 @@ from flask.cli import with_appcontext
 import accounts
 import database as db
 from notifications import queue, settings as delivery_settings
-from notifications import transport, worker
+from notifications import heartbeat, transport, worker
 
 from . import cli as base_cli
 from .cli import _fail, _require_current_schema
+from .logging_setup import configure_json_logging
 from .security import get_settings
 
 # Exit status of notifications-send when delivery is unavailable
@@ -53,7 +57,15 @@ def _load_settings():
 
 
 def _configure_logging():
-    """Send the worker's log lines (no addresses or content) to stderr."""
+    """Send the worker's log lines (no addresses or content) to stderr.
+
+    In production they are JSON lines, like the web application's, so
+    the journal holds one consistent format.
+    """
+
+    if get_settings(current_app).is_production:
+        configure_json_logging()
+        return
 
     log = logging.getLogger("notifications")
 
@@ -136,14 +148,18 @@ def notifications_send_command(limit, loop, interval):
         for sig in (signal.SIGTERM, signal.SIGINT)
     }
 
+    beat = heartbeat.Heartbeat(heartbeat.heartbeat_path(), runner.worker_id)
+
     try:
         click.echo(f"Worker running; checking every {interval}s. "
                    "Send SIGTERM or press Ctrl+C to stop.")
         runner.run_forever(
             interval=interval, limit=limit, stop_event=stop,
             on_summary=lambda s: s.claimed and _echo_summary(
-                s, settings.is_simulated)
+                s, settings.is_simulated),
+            heartbeat=beat,
         )
+        beat.stopped()
         click.echo("Worker stopped.")
 
     finally:
@@ -243,8 +259,60 @@ def set_email_command(username, address, clear):
         click.echo(f"Email address set for {username!r}.")
 
 
+@click.command("notifications-requeue")
+@click.argument("notification_ids", nargs=-1, required=True, type=int)
+@click.option("--reason", required=True,
+              help="Why these are being sent again (recorded in the audit "
+                   "log), e.g. 'SMTP password fixed, ticket #812'.")
+@click.option("--yes", is_flag=True,
+              help="Do not ask for confirmation.")
+@with_appcontext
+def notifications_requeue_command(notification_ids, reason, yes):
+    """Queue new copies of permanently FAILED notifications.
+
+    Use after fixing the cause of the failure (for example a wrong SMTP
+    password). The failed rows and their history are kept; each copy gets
+    fresh delivery attempts. A notification can be requeued at most 3
+    times, and each requeue is recorded in the audit log with the
+    operating-system account that ran this command and the reason.
+    """
+
+    _require_current_schema()
+
+    if not yes:
+        if not base_cli._interactive():
+            _fail("confirm with --yes when not running in a terminal; "
+                  "nothing was requeued.")
+        click.confirm(f"Requeue {len(notification_ids)} failed "
+                      "notification(s)?", abort=True)
+
+    operator = base_cli._operator()
+    failures = 0
+
+    for notification_id in notification_ids:
+        try:
+            new_id = queue.requeue(db.DB_PATH, notification_id,
+                                   operator=operator, reason=reason)
+        except queue.RequeueError as error:
+            failures += 1
+            click.echo(f"#{notification_id}: not requeued: {error}",
+                       err=True)
+            continue
+        except sqlite3.Error as error:
+            failures += 1
+            click.echo(f"#{notification_id}: not requeued: database error "
+                       f"({type(error).__name__})", err=True)
+            continue
+
+        click.echo(f"#{notification_id}: requeued as #{new_id}")
+
+    if failures:
+        sys.exit(1)
+
+
 COMMANDS = (
     notifications_send_command,
+    notifications_requeue_command,
     notifications_status_command,
     notifications_check_config_command,
     set_email_command,

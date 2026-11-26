@@ -12,6 +12,8 @@
   'login_failed': 'Sign-in failed',
   'audit_archived': 'Audit events archived',
   'email_changed': 'Notification email changed',
+  'notification_queue_failed': 'Notifications could not be queued',
+  'notification_requeued': 'Notification requeued by operator',
 } %}
 
 {% block content %}
@@ -41,6 +43,9 @@
   </li>
   <li class="nav-item">
     <a class="nav-link {% if kind == 'logins' %}active{% endif %}" href="{{ url_for('admin.audit_log', kind='logins') }}">Sign-ins</a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link {% if kind == 'operations' %}active{% endif %}" href="{{ url_for('admin.audit_log', kind='operations') }}">Operations</a>
   </li>
 </ul>
 

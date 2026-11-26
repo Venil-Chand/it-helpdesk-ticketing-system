@@ -54,6 +54,8 @@ LOGIN_SUCCEEDED = "login_succeeded"
 LOGIN_FAILED = "login_failed"
 AUDIT_ARCHIVED = "audit_archived"
 EMAIL_CHANGED = "email_changed"
+NOTIFICATION_QUEUE_FAILED = notification_events.QUEUE_FAILED_ACTION
+NOTIFICATION_REQUEUED = notification_events.REQUEUED_ACTION
 
 AUDIT_ACTIONS = frozenset({
     ACCOUNT_CREATED,
@@ -66,6 +68,8 @@ AUDIT_ACTIONS = frozenset({
     LOGIN_FAILED,
     AUDIT_ARCHIVED,
     EMAIL_CHANGED,
+    NOTIFICATION_QUEUE_FAILED,
+    NOTIFICATION_REQUEUED,
 })
 
 # Actions shown by each filter of the audit log page
@@ -74,6 +78,7 @@ AUDIT_CATEGORIES = {
                  ACCOUNT_REACTIVATED, PASSWORD_RESET, PASSWORD_CHANGED,
                  AUDIT_ARCHIVED, EMAIL_CHANGED),
     "logins": (LOGIN_SUCCEEDED, LOGIN_FAILED),
+    "operations": (NOTIFICATION_QUEUE_FAILED, NOTIFICATION_REQUEUED),
 }
 
 # Why a login failed, as stored in new_value. The login page always shows

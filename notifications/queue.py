@@ -41,8 +41,9 @@ import secrets
 import sqlite3
 from dataclasses import dataclass
 from datetime import timedelta
+from pathlib import Path
 
-from . import timeutil
+from . import events, timeutil
 
 PENDING = "pending"
 PROCESSING = "processing"
@@ -473,6 +474,197 @@ def status_counts(path):
         ).fetchall()
 
         return counts, oldest, failures
+
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------
+# HEALTH (read-only, for monitoring)
+# ---------------------------------------------------
+
+@dataclass(frozen=True)
+class QueueHealth:
+    pending: int
+    due: int
+    oldest_due_seconds: float      # 0 when nothing is due
+    stuck_processing: int          # claims whose lease has expired
+    failed_last_day: int
+    queue_failures_last_day: int   # changes saved without notifications
+
+
+def health(path, now=None):
+    """Numbers a monitor needs. Counts only; no addresses or content."""
+
+    now = now or timeutil.utc_now()
+    now_text = timeutil.format_utc(now)
+    day_ago = timeutil.format_utc(now - timedelta(days=1))
+
+    conn = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro",
+                           uri=True, timeout=LOCK_TIMEOUT)
+
+    try:
+        pending, due, oldest = conn.execute(
+            """
+            SELECT COUNT(*),
+                   SUM(next_attempt_at <= ?),
+                   MIN(CASE WHEN next_attempt_at <= ? THEN next_attempt_at END)
+            FROM notifications WHERE status = 'pending'
+            """,
+            (now_text, now_text)
+        ).fetchone()
+
+        stuck = conn.execute(
+            "SELECT COUNT(*) FROM notifications "
+            "WHERE status = 'processing' AND claimed_until <= ?",
+            (now_text,)
+        ).fetchone()[0]
+
+        failed = conn.execute(
+            "SELECT COUNT(*) FROM notifications "
+            "WHERE status = 'failed' AND updated_at >= ?",
+            (day_ago,)
+        ).fetchone()[0]
+
+        # audit_events.created_at is SQLite's CURRENT_TIMESTAMP (UTC)
+        queue_failures = conn.execute(
+            "SELECT COUNT(*) FROM audit_events WHERE action = ? "
+            "AND created_at >= ?",
+            (events.QUEUE_FAILED_ACTION,
+             (now - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S"))
+        ).fetchone()[0]
+
+    finally:
+        conn.close()
+
+    oldest_seconds = 0.0
+    if oldest:
+        oldest_seconds = max(
+            0.0, (now - timeutil.parse_utc(oldest)).total_seconds())
+
+    return QueueHealth(pending, due or 0, oldest_seconds, stuck, failed,
+                       queue_failures)
+
+
+# ---------------------------------------------------
+# MANUAL REQUEUE (operator command, audited)
+# ---------------------------------------------------
+
+# How many times one original notification may be requeued by hand. Each
+# requeue gets a full set of delivery attempts, so this bounds how many
+# messages a misbehaving operator script could ever cause.
+MAX_REQUEUES = 3
+
+MAX_REASON_LENGTH = 200
+
+
+class RequeueError(Exception):
+    """The requeue was refused. The message is safe to print."""
+
+
+def _root_id(row):
+    key = row["dedupe_key"]
+
+    if key.startswith("requeue:"):
+        try:
+            return int(key.split(":")[1])
+        except (IndexError, ValueError):
+            pass
+
+    return row["id"]
+
+
+def requeue(path, notification_id, *, operator, reason, now=None):
+    """
+    Queue a new copy of a permanently failed notification.
+
+    The failed row and its attempt history stay exactly as they are; the
+    copy is a new row (dedupe key "requeue:<original id>:<n>") with fresh
+    attempts and a fresh age limit, delivered by the worker like any
+    other, including the recipient check at delivery time. Only "failed"
+    rows can be requeued (a "cancelled" one would be cancelled again),
+    each original at most MAX_REQUEUES times, and every requeue is
+    written to audit_events with the operator and the reason, in the
+    same transaction. Returns the new notification's id.
+    """
+
+    reason = " ".join((reason or "").split())
+
+    if not reason:
+        raise RequeueError("a reason is required")
+
+    if len(reason) > MAX_REASON_LENGTH:
+        raise RequeueError(f"the reason is longer than {MAX_REASON_LENGTH} "
+                           "characters")
+
+    now_text = timeutil.format_utc(now or timeutil.utc_now())
+    conn = connect(path)
+
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+
+        try:
+            row = conn.execute("SELECT * FROM notifications WHERE id = ?",
+                               (notification_id,)).fetchone()
+
+            if row is None:
+                raise RequeueError(f"notification {notification_id} does "
+                                   "not exist")
+
+            if row["status"] != FAILED:
+                raise RequeueError(
+                    f"notification {notification_id} is {row['status']}; "
+                    "only failed notifications can be requeued"
+                )
+
+            root = _root_id(row)
+            copies = conn.execute(
+                "SELECT COUNT(*) FROM notifications WHERE dedupe_key LIKE ?",
+                (f"requeue:{root}:%",)
+            ).fetchone()[0]
+
+            if copies >= MAX_REQUEUES:
+                raise RequeueError(
+                    f"notification {root} has already been requeued "
+                    f"{copies} times, the maximum; investigate the cause "
+                    "instead"
+                )
+
+            cursor = conn.execute(
+                """
+                INSERT INTO notifications
+                (event_type, dedupe_key, recipient_user_id,
+                 recipient_username, recipient_reason, ticket_id, payload,
+                 status, created_at, updated_at, next_attempt_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+                """,
+                (row["event_type"], f"requeue:{root}:{copies + 1}",
+                 row["recipient_user_id"], row["recipient_username"],
+                 row["recipient_reason"], row["ticket_id"], row["payload"],
+                 now_text, now_text, now_text)
+            )
+            new_id = cursor.lastrowid
+
+            conn.execute(
+                """
+                INSERT INTO audit_events
+                (actor, action, target_user_id, target_username,
+                 old_value, new_value)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (f"cli:{operator}", events.REQUEUED_ACTION,
+                 row["recipient_user_id"], row["recipient_username"],
+                 f"notification {notification_id} ({row['event_type']})",
+                 f"notification {new_id}; reason: {reason}")
+            )
+
+            conn.execute("COMMIT")
+            return new_id
+
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
 
     finally:
         conn.close()

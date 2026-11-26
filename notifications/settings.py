@@ -21,7 +21,10 @@ application never sends email, so it needs none of them.
                                machine (localhost/127.0.0.1/::1) and never
                                with credentials.
     NOTIFICATION_SMTP_USERNAME optional; requires the password
-    NOTIFICATION_SMTP_PASSWORD optional; only ever from the environment
+    NOTIFICATION_SMTP_PASSWORD optional; only ever from the environment,
+                               or NOTIFICATION_SMTP_PASSWORD_FILE naming
+                               a private file that holds it (production:
+                               not readable by other accounts)
     NOTIFICATION_SMTP_TIMEOUT  seconds for connecting and each SMTP
                                command, 1-120, default 20
 
@@ -44,6 +47,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import secret_files
 import validation
 
 LOCAL = "local"
@@ -271,8 +275,15 @@ def load_delivery_settings(environ=None, *, production=False):
         )
 
     username = _text(environ, "NOTIFICATION_SMTP_USERNAME")
-    # Not stripped: spaces may be part of a password
-    password = environ.get("NOTIFICATION_SMTP_PASSWORD", "")
+
+    # Not stripped: spaces may be part of a password. May come from
+    # NOTIFICATION_SMTP_PASSWORD_FILE (systemd LoadCredential=) instead.
+    try:
+        password = secret_files.read_secret(
+            environ, "NOTIFICATION_SMTP_PASSWORD", require_private=production
+        )
+    except secret_files.SecretFileError as error:
+        raise NotificationConfigError(str(error).rstrip(".")) from None
 
     if bool(username) != bool(password):
         raise NotificationConfigError(
