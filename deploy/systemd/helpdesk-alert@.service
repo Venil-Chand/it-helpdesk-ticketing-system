@@ -1,0 +1,17 @@
+# Started by OnFailure= when a helpdesk unit fails; %i is the failed unit.
+#
+# It writes a critical entry to the journal, which journal-based
+# monitoring can pick up, and then runs /etc/helpdesk/alert-hook if that
+# file exists and is executable. The hook is where the server's own
+# alerting goes (email through the server's mail relay, a chat webhook,
+# a pager): this repository cannot know which one you use. The hook
+# receives the failed unit's name as its only argument and must not
+# print secrets. EXAMPLE ONLY - review before installing.
+
+[Unit]
+Description=Alert: %i failed
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/logger --priority daemon.crit --tag helpdesk-alert "%i failed; see journalctl -u %i"
+ExecStart=/bin/sh -c 'if [ -x /etc/helpdesk/alert-hook ]; then exec /etc/helpdesk/alert-hook "$1"; fi' alert %i

@@ -21,6 +21,14 @@ env/
 # Environment variables — keep secrets out of Git
 .env
 
+# Backups, keys and credentials never belong in the repository (the
+# backup commands refuse to write inside it; this is a second guard)
+*.hdbk
+*.manifest.json
+*.key
+backup-key*
+credentials/
+
 # Local runtime data: simulated notification emails (they name real
 # accounts) and anything else written under instance/
 instance/

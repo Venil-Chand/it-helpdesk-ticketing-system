@@ -23,6 +23,7 @@ Package layout:
     admin.py           blueprint "admin": account administration, audit log
     ticket_filters.py  filters and values shared by several blueprints
     cli.py             flask db-status / init-db / assignment-audit
+    backup_cli.py      flask backup-create / -verify / -drill / -restore ...
     notification_cli.py  flask notifications-send / -status / set-email
     clock.py           the single clock every route reads
 """
