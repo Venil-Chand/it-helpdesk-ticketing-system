@@ -1,0 +1,12 @@
+# Every 5 minutes: sudo systemctl enable --now helpdesk-ops-check.timer
+
+[Unit]
+Description=IT Helpdesk operational check every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

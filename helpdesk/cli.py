@@ -14,7 +14,8 @@ Database command-line tools, run through Flask's CLI:
 Notification commands (notifications-send, notifications-status,
 notifications-check-config, set-email) live in notification_cli.py and
 are registered here too, as are the backup commands (backup-create,
-backup-verify, backup-drill, ...) from backup_cli.py.
+backup-verify, backup-drill, ...) from backup_cli.py and ops-check from
+ops_cli.py.
 
 create_app() attaches these to every application with register_commands().
 They act on database.DB_PATH and never create user accounts; use
@@ -409,10 +410,10 @@ def register_commands(app):
     """Make the database commands available as "flask --app app <name>"."""
 
     # Imported here: these modules use helpers from this one
-    from . import backup_cli, notification_cli
+    from . import backup_cli, notification_cli, ops_cli
 
     for command in (COMMANDS + notification_cli.COMMANDS
-                    + backup_cli.COMMANDS):
+                    + backup_cli.COMMANDS + ops_cli.COMMANDS):
         app.cli.add_command(command)
 
 

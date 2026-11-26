@@ -599,7 +599,10 @@ class TestOwnership(AuthTestCase):
 
 class TestEveryRouteIsProtected(AuthTestCase):
 
-    PUBLIC_ENDPOINTS = {"auth.login", "auth.logout", "static"}
+    # The health checks are public on purpose; test_operational_monitoring
+    # checks that they reveal nothing beyond "ok"/"fail" per check
+    PUBLIC_ENDPOINTS = {"auth.login", "auth.logout", "static",
+                        "health.healthz", "health.readyz"}
 
     def test_every_other_route_requires_a_login(self):
         for rule in app.url_map.iter_rules():

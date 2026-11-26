@@ -21,9 +21,11 @@ Package layout:
     reports.py         blueprint "reports": CSV export
     account.py         blueprint "account": change your own password
     admin.py           blueprint "admin": account administration, audit log
+    health.py          blueprint "health": /healthz and /readyz
     ticket_filters.py  filters and values shared by several blueprints
     cli.py             flask db-status / init-db / assignment-audit
     backup_cli.py      flask backup-create / -verify / -drill / -restore ...
+    ops_cli.py         flask ops-check: one monitoring check for everything
     notification_cli.py  flask notifications-send / -status / set-email
     clock.py           the single clock every route reads
 """
@@ -37,7 +39,7 @@ from flask import Flask
 import security_config
 from sla_storage import parse_stored_utc
 
-from . import account, admin, auth, dashboard, reports, tickets
+from . import account, admin, auth, dashboard, health, reports, tickets
 from .cli import register_commands
 from .errors import register_error_handlers
 from .logging_setup import register_request_ids
@@ -54,6 +56,7 @@ BLUEPRINTS = (
     reports.bp,
     account.bp,
     admin.bp,
+    health.bp,
 )
 
 

@@ -77,6 +77,12 @@ ACCOUNT_ROUTES = {
     ("/admin/audit", frozenset({"GET"}), "admin.audit_log"),
 }
 
+# Health checks for monitoring (Package 3), listed exactly as well
+HEALTH_ROUTES = {
+    ("/healthz", frozenset({"GET"}), "health.healthz"),
+    ("/readyz", frozenset({"GET"}), "health.readyz"),
+}
+
 # Endpoint names used before the blueprints; none may still resolve
 OLD_ENDPOINTS = (
     "index", "login", "logout", "new_ticket", "ticket_detail",
@@ -323,7 +329,8 @@ class BlueprintRegistrationTests(unittest.TestCase):
     def test_expected_blueprints_are_registered(self):
         self.assertEqual(
             set(self.app.blueprints),
-            {"auth", "dashboard", "tickets", "reports", "account", "admin"}
+            {"auth", "dashboard", "tickets", "reports", "account", "admin",
+             "health"}
         )
         self.assertEqual(len(BLUEPRINTS), len(self.app.blueprints))
 
@@ -334,7 +341,8 @@ class BlueprintRegistrationTests(unittest.TestCase):
             for rule in self.app.url_map.iter_rules()
         }
 
-        self.assertEqual(actual, EXPECTED_ROUTES | ACCOUNT_ROUTES)
+        self.assertEqual(actual,
+                         EXPECTED_ROUTES | ACCOUNT_ROUTES | HEALTH_ROUTES)
 
     def test_old_endpoint_names_no_longer_resolve(self):
         with self.app.test_request_context():

@@ -1,0 +1,39 @@
+# Runs "flask ops-check" (read-only). Started every 5 minutes by
+# helpdesk-ops-check.timer. EXAMPLE ONLY - review before installing.
+#
+# Exit 0 = OK, 1 = WARNING, 2 = CRITICAL. Warnings are recorded in the
+# journal (journalctl -u helpdesk-ops-check) without alerting; a CRITICAL
+# result fails the unit, which starts helpdesk-alert@.service.
+
+[Unit]
+Description=IT Helpdesk operational check
+OnFailure=helpdesk-alert@%n.service
+
+[Service]
+Type=oneshot
+User=helpdesk
+Group=helpdesk
+WorkingDirectory=/opt/helpdesk/current
+EnvironmentFile=/etc/helpdesk/helpdesk.env
+LoadCredential=secret-key:/etc/helpdesk/credentials/secret-key
+LoadCredential=redis-uri:/etc/helpdesk/credentials/redis-uri
+Environment=SECRET_KEY_FILE=%d/secret-key
+Environment=RATELIMIT_STORAGE_URI_FILE=%d/redis-uri
+
+ExecStart=/opt/helpdesk/current/.venv/bin/flask --app app ops-check
+SuccessExitStatus=1
+TimeoutStartSec=2min
+
+# Read-only: it needs to read the database, backups and heartbeat only
+ProtectSystem=strict
+ReadOnlyPaths=/var/lib/helpdesk /var/backups/helpdesk
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
