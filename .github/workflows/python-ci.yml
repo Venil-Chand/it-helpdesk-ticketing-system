@@ -104,22 +104,37 @@ jobs:
 
       # Every Caddyfile in the repository: formatting, adaptation to JSON
       # (with module validation) and full validation by the real Caddy
+      # Every check runs for every file, so one run reports all problems
       - name: Validate every Caddyfile
         run: |
-          set -euo pipefail
+          set -uo pipefail
           files=$(git ls-files '*Caddyfile*')
-          test -n "$files"
+          test -n "$files" || exit 1
+          failed=0
+          caddy() {
+            docker run --rm -v "$PWD:/src:ro" -w /src "$CADDY_IMAGE" caddy "$@"
+          }
           for file in $files; do
             echo "::group::$file"
-            docker run --rm -v "$PWD:/src:ro" -w /src "$CADDY_IMAGE" \
-              caddy fmt "$file" > /tmp/formatted
-            diff -u "$file" /tmp/formatted
-            docker run --rm -v "$PWD:/src:ro" -w /src "$CADDY_IMAGE" \
-              caddy adapt --config "$file" --adapter caddyfile --validate > /dev/null
-            docker run --rm -v "$PWD:/src:ro" -w /src "$CADDY_IMAGE" \
-              caddy validate --config "$file" --adapter caddyfile
+            # "caddy fmt" exits 1 when the file is not formatted; the
+            # formatted text it prints shows exactly what differs
+            caddy fmt "$file" > /tmp/formatted 2> /tmp/fmt-errors
+            if ! diff -u "$file" /tmp/formatted; then
+              cat /tmp/fmt-errors
+              echo "::error file=$file::not formatted as 'caddy fmt' would format it"
+              failed=1
+            fi
+            if ! caddy adapt --config "$file" --adapter caddyfile --validate > /tmp/adapted.json; then
+              echo "::error file=$file::caddy adapt --validate failed"
+              failed=1
+            fi
+            if ! caddy validate --config "$file" --adapter caddyfile; then
+              echo "::error file=$file::caddy validate failed"
+              failed=1
+            fi
             echo "::endgroup::"
           done
+          exit $failed
 
       - name: Set up Python
         uses: actions/setup-python@v7
