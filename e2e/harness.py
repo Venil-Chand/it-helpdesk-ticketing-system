@@ -20,6 +20,7 @@ import json
 import os
 import pty
 import select
+import signal
 import socket
 import socketserver
 import sqlite3
@@ -82,15 +83,24 @@ class HelpdeskServer:
             # Flask's own command line would otherwise load ./.env itself
             "FLASK_SKIP_DOTENV": "1",
         }
+        # A Python built with a shared libpython (as on GitHub's hosted
+        # runners) needs its library path in every child process
+        if os.environ.get("LD_LIBRARY_PATH"):
+            self.env["LD_LIBRARY_PATH"] = os.environ["LD_LIBRARY_PATH"]
         self.env.update(extra_env or {})
 
     # --- lifecycle -------------------------------------------------------
 
     def start(self):
+        progress = lambda text: print(f"[harness] {text}", file=sys.stderr,
+                                      flush=True)
         result = self.flask("init-db")
         assert "version 10" in result.stdout, result.stdout + result.stderr
+        progress("database created (schema version 10)")
         self.create_first_admin()
+        progress("first administrator created by setup_accounts.py")
         self.start_web()
+        progress(f"application serving on {self.url}")
         return self
 
     def start_web(self):
@@ -158,34 +168,50 @@ class HelpdeskServer:
         """
         Run a command at a pseudo-terminal and type `answers` in order,
         each when the previous prompt has appeared. Returns the output.
+
+        The command is killed, and the test fails with its output, if it
+        has not finished within `timeout` seconds.
         """
 
         pid, fd = pty.fork()
-        if pid == 0:  # the child: become the command
-            os.chdir(ROOT)
-            os.execve(argv[0], argv, self.env)
+        if pid == 0:  # the child: become the command, or exit at once
+            try:
+                os.chdir(ROOT)
+                os.execve(argv[0], argv, self.env)
+            finally:
+                os._exit(127)
 
         output = b""
         pending = list(answers)
         deadline = time.monotonic() + timeout
+        status = None
         try:
-            while time.monotonic() < deadline:
+            while status is None and time.monotonic() < deadline:
                 ready, _, _ = select.select([fd], [], [], 0.2)
                 if ready:
                     try:
                         chunk = os.read(fd, 4096)
-                    except OSError:
-                        break
-                    if not chunk:
-                        break
+                    except OSError:  # EIO: the child closed the terminal
+                        chunk = b""
                     output += chunk
-                    if pending and output.rstrip().endswith(b":"):
+                    if chunk and pending and output.rstrip().endswith(b":"):
                         os.write(fd, pending.pop(0).encode() + b"\n")
-            _, status = os.waitpid(pid, 0)
+                    if chunk:
+                        continue
+                finished, wait_status = os.waitpid(pid, os.WNOHANG)
+                if finished:
+                    status = wait_status
+            if status is None:
+                os.kill(pid, signal.SIGKILL)
+                os.waitpid(pid, 0)
         finally:
             os.close(fd)
 
         text = output.decode(errors="replace")
+        if status is None:
+            raise AssertionError(
+                f"{argv} did not finish in {timeout} s ({len(pending)} "
+                f"prompt(s) not answered); output:\n{text}")
         if os.waitstatus_to_exitcode(status) != 0:
             raise AssertionError(f"{argv} failed:\n{text}")
         return text

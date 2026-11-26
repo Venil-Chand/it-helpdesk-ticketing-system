@@ -76,6 +76,8 @@ jobs:
   browser:
     name: Browser workflow tests
     runs-on: ubuntu-latest
+    # About 2 minutes normally; stop a hung browser or server early
+    timeout-minutes: 20
 
     steps:
       - name: Checkout repository
