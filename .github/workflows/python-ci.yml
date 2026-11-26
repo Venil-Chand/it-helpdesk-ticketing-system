@@ -72,3 +72,68 @@ jobs:
       - name: Run unit tests
         run: |
           python -m unittest discover -s tests -v
+
+  caddy:
+    name: Validate Caddy configuration
+    runs-on: ubuntu-latest
+
+    # The official Caddy image, pinned by digest (caddy:2.11.9)
+    env:
+      CADDY_IMAGE: caddy@sha256:4851e54a46b206517c574821bb5cc67f170d2156041e9fbc4c9193b45e84a75b
+
+    # Disposable Redis for the Gunicorn workers behind Caddy
+    services:
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - 127.0.0.1:6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Pull Caddy
+        run: |
+          docker pull "$CADDY_IMAGE"
+          docker run --rm "$CADDY_IMAGE" caddy version
+
+      # Every Caddyfile in the repository: formatting, adaptation to JSON
+      # (with module validation) and full validation by the real Caddy
+      - name: Validate every Caddyfile
+        run: |
+          set -euo pipefail
+          files=$(git ls-files '*Caddyfile*')
+          test -n "$files"
+          for file in $files; do
+            echo "::group::$file"
+            docker run --rm -v "$PWD:/src:ro" -w /src "$CADDY_IMAGE" \
+              caddy fmt "$file" > /tmp/formatted
+            diff -u "$file" /tmp/formatted
+            docker run --rm -v "$PWD:/src:ro" -w /src "$CADDY_IMAGE" \
+              caddy adapt --config "$file" --adapter caddyfile --validate > /dev/null
+            docker run --rm -v "$PWD:/src:ro" -w /src "$CADDY_IMAGE" \
+              caddy validate --config "$file" --adapter caddyfile
+            echo "::endgroup::"
+          done
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      # Real Caddy in front of real Gunicorn workers: TLS, cookies, HSTS,
+      # forged forwarded headers, body limit, /readyz restriction, log
+      # filtering, and that Gunicorn is reachable only on loopback
+      - name: Check the Caddy and Gunicorn proxy boundary
+        run: .github/scripts/caddy-proxy-check.sh "$CADDY_IMAGE" redis://127.0.0.1:6379/14
