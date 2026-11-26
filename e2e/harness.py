@@ -25,6 +25,7 @@ import socket
 import socketserver
 import sqlite3
 import subprocess
+import termios
 import sys
 import tempfile
 import threading
@@ -169,6 +170,11 @@ class HelpdeskServer:
         Run a command at a pseudo-terminal and type `answers` in order,
         each when the previous prompt has appeared. Returns the output.
 
+        Every prompt here is a hidden password prompt (getpass). An answer
+        is typed only once the terminal's echo is off: getpass flushes
+        typed-ahead input when it switches echo off, so an answer sent
+        between the prompt and that switch would be lost.
+
         The command is killed, and the test fails with its output, if it
         has not finished within `timeout` seconds.
         """
@@ -183,6 +189,7 @@ class HelpdeskServer:
 
         output = b""
         pending = list(answers)
+        answered = 0  # length of the output when the last answer was typed
         deadline = time.monotonic() + timeout
         status = None
         try:
@@ -194,10 +201,13 @@ class HelpdeskServer:
                     except OSError:  # EIO: the child closed the terminal
                         chunk = b""
                     output += chunk
-                    if chunk and pending and output.rstrip().endswith(b":"):
-                        os.write(fd, pending.pop(0).encode() + b"\n")
                     if chunk:
                         continue
+                new_prompt = output[answered:].rstrip().endswith(b":")
+                if pending and new_prompt and self._echo_is_off(fd):
+                    os.write(fd, pending.pop(0).encode() + b"\n")
+                    answered = len(output)
+                    continue
                 finished, wait_status = os.waitpid(pid, os.WNOHANG)
                 if finished:
                     status = wait_status
@@ -215,6 +225,13 @@ class HelpdeskServer:
         if os.waitstatus_to_exitcode(status) != 0:
             raise AssertionError(f"{argv} failed:\n{text}")
         return text
+
+    @staticmethod
+    def _echo_is_off(fd):
+        try:
+            return not termios.tcgetattr(fd)[3] & termios.ECHO
+        except termios.error:
+            return False
 
     def create_first_admin(self):
         text = self.run_at_terminal(

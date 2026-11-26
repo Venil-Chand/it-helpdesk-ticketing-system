@@ -46,15 +46,15 @@ class BrowserTestCase(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        # Class cleanups run even when a later step here fails, so one
+        # class's failed setup cannot leave Playwright running for the next
         cls.playwright = sync_playwright().start()
+        cls.addClassCleanup(cls.playwright.stop)
         cls.browser = cls.playwright.chromium.launch()
-        cls.server = HelpdeskServer(cls.server_env).start()
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.server.close()
-        cls.browser.close()
-        cls.playwright.stop()
+        cls.addClassCleanup(cls.browser.close)
+        cls.server = HelpdeskServer(cls.server_env)
+        cls.addClassCleanup(cls.server.close)
+        cls.server.start()
 
     def setUp(self):
         # A fresh web process: empty rate-limit counters, same database,
