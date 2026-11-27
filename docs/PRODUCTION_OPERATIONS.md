@@ -677,16 +677,23 @@ The automated tests pass. That shows the code does what it was designed
 to do on a development machine; it does **not** show the system is ready
 for production. Known risks:
 
-- **Never deployed.** The systemd units, Caddyfile and Redis settings are
-  reviewed examples, syntax-checked (`systemd-analyze verify`) but never
-  run on a server. Caddy was not available to validate the Caddyfile.
+- **Never deployed.** The systemd units and Redis settings are reviewed
+  examples, syntax-checked (`systemd-analyze verify`) but never run on a
+  server. The Caddyfile is formatted, adapted and validated by the real
+  Caddy (2.11.9) in CI, and real Caddy in front of real Gunicorn passes 14
+  proxy-boundary checks there, but never with a real certificate or DNS
+  name.
 - **Single server, single database file.** No high availability; a
   server failure means restoring from backup onto another machine
   (minutes to hours, plus up to 24 h of lost data with nightly backups).
 - **SQLite write concurrency.** Writes are serialised. Fine for a small
-  helpdesk; not load-tested. Readers and writers in rollback-journal mode
-  can briefly block each other.
-- **No load or browser testing**, and no penetration test.
+  helpdesk: 8 processes writing at once completed 960 writes without an
+  error, and a load smoke test served 350–800 pages per second (see
+  docs/RELEASE_READINESS_1.0.0-rc1.md). Neither was run on the target
+  server. Readers and writers in rollback-journal mode can briefly block
+  each other.
+- **Browser tests cover the main workflows (17, in CI); no penetration
+  test** has been carried out.
 - **Redis outage locks out sign-in** (by design: fail closed). Users
   already signed in are unaffected.
 - **The backup key is a single point of failure** for recovery, and its

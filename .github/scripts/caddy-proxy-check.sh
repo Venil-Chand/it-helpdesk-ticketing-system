@@ -33,6 +33,7 @@ cleanup() {
     fi
 }
 trap cleanup EXIT
+trap 'echo "ERROR: line $LINENO: $BASH_COMMAND" >&2' ERR
 
 pass() { echo "PASS  $1"; }
 fail() { echo "FAIL  $1"; failures=$((failures + 1)); }
@@ -148,8 +149,12 @@ check "plain HTTP is redirected to HTTPS ($redirect)" \
 # app still sees HTTPS and the real client address, and the rate limit
 # cannot be dodged by inventing a new address on every attempt
 "${CURL[@]}" -c "$WORK/jar" -o "$WORK/login.html" "$BASE/login"
-token=$(grep -o 'name="csrf_token"[^>]*value="[^"]*"' "$WORK/login.html" |
-        sed 's/.*value="\([^"]*\)"/\1/' | head -1)
+# The input's attributes span several lines, so match across them
+token=$("$PYTHON" -c '
+import re, sys
+match = re.search(r"name=\"csrf_token\"\s+value=\"([^\"]+)\"", open(sys.argv[1]).read())
+print(match.group(1))' "$WORK/login.html")
+test -n "$token"
 codes=""
 for n in 1 2 3 4 5 6 7; do
     code=$("${CURL[@]}" -b "$WORK/jar" -o /dev/null -w '%{http_code}' \

@@ -400,6 +400,18 @@ class TestVerifyBackup(BackupTestCase):
                                     "does not match its manifest"):
             backups.verify_backup(self.result.path, self.key)
 
+    def test_wrong_database_checksum_in_manifest_is_detected(self):
+        # The file itself is intact (its size and sha256 still match), but
+        # the manifest describes a different database: verification must
+        # compare the decrypted database too, not only the encrypted file
+        manifest = json.loads(Path(self.result.manifest_path).read_text())
+        manifest["database_sha256"] = "0" * 64
+        Path(self.result.manifest_path).write_text(json.dumps(manifest))
+
+        with self.assertRaisesRegex(backups.BackupError,
+                                    "decrypted database does not match"):
+            backups.verify_backup(self.result.path, self.key)
+
 
 # ---------------------------------------------------
 # OFF-SERVER COPY

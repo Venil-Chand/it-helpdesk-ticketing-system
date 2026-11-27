@@ -1,0 +1,2 @@
+# Browser tests only (e2e/). Not needed to run the helpdesk.
+playwright==1.65.2
