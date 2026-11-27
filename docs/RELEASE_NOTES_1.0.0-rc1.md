@@ -67,7 +67,9 @@ killed. `pip-audit` clean. No secrets in Git history. Backup, corruption,
 key-loss and live-restore rehearsal 27/27. Redis outage, worker crash and
 restart rehearsal 27/27. Concurrency, worker interruption and load
 rehearsal 21/21. Details and limits:
-[RELEASE_READINESS_1.0.0-rc1.md](RELEASE_READINESS_1.0.0-rc1.md).
+[RELEASE_READINESS_1.0.0-rc1.md](RELEASE_READINESS_1.0.0-rc1.md). The
+rehearsals can be repeated with `python -m rehearsals`
+([REHEARSALS.md](REHEARSALS.md)).
 
 **No penetration test has been performed.**
 

@@ -65,13 +65,20 @@ jobs:
       # Step 5: Check Python syntax
       - name: Check Python syntax
         run: |
-          python -m compileall -q accounts.py app.py audit_archive.py backups.py csv_export.py database.py migrations.py proxy_trust.py secret_files.py security_config.py setup_accounts.py sla.py sla_storage.py validation.py wsgi.py helpdesk notifications scripts deploy e2e
+          python -m compileall -q accounts.py app.py audit_archive.py backups.py csv_export.py database.py migrations.py proxy_trust.py secret_files.py security_config.py setup_accounts.py sla.py sla_storage.py validation.py wsgi.py helpdesk notifications scripts deploy e2e rehearsals
           bash -n deploy/scripts/run-backup.sh
 
       # Step 6: Run automated tests
       - name: Run unit tests
         run: |
           python -m unittest discover -s tests -v
+
+      # Step 7: The release rehearsals themselves are slow and run in
+      # rehearsals.yml; these quick checks prove their safety guard and
+      # that every security mutant still matches the code
+      - name: Check the rehearsal harness
+        run: |
+          python -m unittest discover -s rehearsals/tests -t . -v
 
   browser:
     name: Browser workflow tests

@@ -19,6 +19,7 @@ index points to the right section instead of repeating it.
 | 11 | User acceptance testing checklist | Pilot administrator, sponsor | [UAT_CHECKLIST.md](UAT_CHECKLIST.md) |
 | 12 | Release notes | Everyone | [RELEASE_NOTES_1.0.0-rc1.md](RELEASE_NOTES_1.0.0-rc1.md) |
 | 13 | Release-readiness report | Sponsor, reviewers | [RELEASE_READINESS_1.0.0-rc1.md](RELEASE_READINESS_1.0.0-rc1.md) |
+| 14 | Release rehearsals (how to repeat the backup, production, reliability and mutation checks) | Developers, reviewers | [REHEARSALS.md](REHEARSALS.md) |
 
 Other references:
 

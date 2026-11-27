@@ -62,5 +62,7 @@
   unit tests only.
 * Load figures come from a development machine without TLS and are
   indicative only.
-* The backup, production and reliability rehearsals were run with scripts
-  that are not part of the repository.
+* The backup, production, reliability and mutation rehearsals
+  (`python -m rehearsals`, see [REHEARSALS.md](REHEARSALS.md)) run on a
+  development machine or a CI runner only. systemd units, the firewall,
+  real certificates and the Redis ACL can only be checked on a real server.

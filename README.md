@@ -785,7 +785,11 @@ python setup_accounts.py             # first administrator and password changes
 ```bash
 python -m unittest discover -s tests -v                                   # everything
 python -m unittest discover -s tests -p "test_application_factory.py" -v  # factory and blueprints
+python -m unittest discover -s rehearsals/tests -t .                      # rehearsal harness checks
+python -m rehearsals all                                                  # slow release rehearsals
 ```
+
+The release rehearsals (backup and restore, production configuration, reliability, security mutants) run against disposable copies and never touch `helpdesk.db` or `.env`; see [docs/REHEARSALS.md](docs/REHEARSALS.md).
 
 To freeze time in a test, patch the single clock: `helpdesk.clock.current_time` (session ages) or `helpdesk.clock.datetime` (SLA statuses on the dashboard, ticket page and CSV export).
 

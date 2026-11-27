@@ -246,9 +246,11 @@ These figures show that the application is not a bottleneck for a pilot of
 tens of users. They are **not** a capacity guarantee: the target server's
 hardware, TLS, network and larger data volumes were not tested.
 
-The backup, production and reliability rehearsals were run with ad-hoc
-scripts on the development machine. They are not committed to the
-repository; the browser tests and unit tests are.
+The backup, production and reliability rehearsals were first run with
+ad-hoc scripts on the development machine. Those scripts were not kept;
+they have since been rewritten and committed as `python -m rehearsals`
+(see [REHEARSALS.md](REHEARSALS.md), which also lists how the rewritten
+checks differ from the counts above).
 
 ## 7. Conditions for a controlled internal pilot
 
