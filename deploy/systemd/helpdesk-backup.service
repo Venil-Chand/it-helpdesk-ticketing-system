@@ -7,6 +7,9 @@
 [Unit]
 Description=IT Helpdesk database backup
 OnFailure=helpdesk-alert@%n.service
+# A network share is mounted by then (it is not required: the local
+# backup must still be made when the share is down)
+After=remote-fs.target
 
 [Service]
 Type=oneshot
@@ -38,8 +41,13 @@ StateDirectory=helpdesk
 # Must already exist, owned by helpdesk, mode 0700 (created during setup;
 # see docs/PRODUCTION_OPERATIONS.md)
 ReadWritePaths=/var/backups/helpdesk
-# Uncomment once the off-server location is mounted:
-# ReadWritePaths=/mnt/helpdesk-offsite
+# The off-server storage is mounted at /mnt/helpdesk-offsite, and
+# HELPDESK_BACKUP_OFFSITE_DIR is a folder inside it (helpdesk, 0700). The
+# "-" lets the unit start when nothing is there yet: the local backup is
+# still made, and run-backup.sh then fails the job (and alerts) because
+# the folder is missing or not on a separate filesystem. A different
+# mount point must be named here as well.
+ReadWritePaths=-/mnt/helpdesk-offsite
 
 NoNewPrivileges=yes
 ProtectSystem=strict

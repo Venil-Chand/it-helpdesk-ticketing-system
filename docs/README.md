@@ -10,6 +10,7 @@ index points to the right section instead of repeating it.
 | 2 | Administrator guide | Helpdesk administrators | [ADMINISTRATOR_GUIDE.md](ADMINISTRATOR_GUIDE.md) |
 | 3 | User guide | Requesters and technicians | [USER_GUIDE.md](USER_GUIDE.md) |
 | 4 | Production deployment guide | System administrators | [PRODUCTION_OPERATIONS.md](PRODUCTION_OPERATIONS.md), sections 1–6 and 10 |
+| 4a | Staging runbook (exact commands for Ubuntu 24.04, tested on a disposable VM) | System administrators | [STAGING_RUNBOOK.md](STAGING_RUNBOOK.md) |
 | 5 | Backup and restoration guide | System administrators | [BACKUP_AND_RESTORE.md](BACKUP_AND_RESTORE.md) (procedures), with the design in [PRODUCTION_OPERATIONS.md §7](PRODUCTION_OPERATIONS.md#7-sqlite-backup-and-recovery) |
 | 6 | Security configuration | System administrators, reviewers | [SECURITY_CONFIGURATION.md](SECURITY_CONFIGURATION.md) |
 | 7 | Notification configuration | System administrators | [NOTIFICATIONS.md](NOTIFICATIONS.md) |

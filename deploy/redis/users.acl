@@ -1,19 +1,2 @@
-# Redis accounts for the helpdesk. Install as /etc/redis/users.acl, owned
-# by redis:redis, mode 0600. Replace CHANGE-ME with a long random
-# password (python3 -c "import secrets; print(secrets.token_urlsafe(32))")
-# and put the same password in the helpdesk credential file:
-#
-#     redis+unix://helpdesk:<password>@/run/redis/redis-server.sock
-#
-# The default account is disabled, so a client that does not sign in can
-# do nothing. The helpdesk account may run only the commands the rate
-# limiter uses, only on its own keys. This exact list was checked against
-# the application with Redis 7.0: sign-in limiting and the readiness
-# check work, while GET of other keys, SET, KEYS, FLUSHALL and CONFIG
-# are refused. On Redis 7.2 or newer, also allow +client|setinfo.
-#
-# For administration, connect as root on the server with a separate,
-# temporarily created account rather than giving the helpdesk more.
-
 user default off
 user helpdesk on >CHANGE-ME ~LIMITS:LIMITER/helpdesk/* resetchannels -@all +ping +get +incrby +expire +ttl +evalsha +eval +script|load +script|exists +hello +auth

@@ -69,6 +69,7 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 import migrations
+import secret_files
 
 MAGIC = b"HDBKENC1"
 KEY_BYTES = 32
@@ -271,7 +272,7 @@ def load_key(path, *, forbidden_directories=()):
         if not stat.S_ISREG(info.st_mode):
             raise BackupError("backup key file is not a regular file")
 
-        if info.st_mode & 0o077:
+        if not secret_files.only_this_account_can_read(descriptor, info):
             raise BackupError(
                 "backup key file must not be readable by other accounts "
                 "(chmod 600)"

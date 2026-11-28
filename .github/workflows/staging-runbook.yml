@@ -1,0 +1,47 @@
+name: Staging runbook
+
+# Runs every automated step of docs/STAGING_RUNBOOK.md, in order, on a
+# disposable GitHub-hosted Ubuntu 24.04 virtual machine (as root), then
+# the acceptance checks that can be automated there. The VM is discarded
+# afterwards. Nothing is deployed anywhere, no DNS or certificate is
+# requested from the internet (Caddy's internal CA is used), and no email
+# can be sent (delivery stays "local").
+#
+# It takes about 5 minutes, so it runs when the runbook or what it installs
+# changes, and on demand (Actions > Staging runbook > Run workflow).
+on:
+  workflow_dispatch:
+
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'docs/STAGING_RUNBOOK.md'
+      - 'deploy/**'
+      - 'requirements.lock'
+      - '.github/scripts/runbook_steps.py'
+      - '.github/scripts/staging-runbook-check.sh'
+      - '.github/workflows/staging-runbook.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  runbook:
+    name: Runbook on a fresh Ubuntu 24.04
+    # Pinned to the release the runbook is written for, not ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          # The runbook clones a tag; it is created locally only
+          fetch-depth: 0
+
+      - name: Tag this commit locally for the runbook's git clone
+        run: git tag staging-runbook-check HEAD
+
+      - name: Run the runbook and the acceptance checks
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT bash .github/scripts/staging-runbook-check.sh

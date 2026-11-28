@@ -4,10 +4,14 @@ Step-by-step procedures for operators. How backups work (snapshot,
 encryption, manifest, schedule, retention) is explained in
 [PRODUCTION_OPERATIONS.md §7](PRODUCTION_OPERATIONS.md#7-sqlite-backup-and-recovery).
 
-Run every command **as the service account**, with the service's
-environment (`HELPDESK_DATABASE_PATH`, `HELPDESK_BACKUP_DIR`,
-`HELPDESK_BACKUP_KEY_FILE`, optionally `HELPDESK_BACKUP_OFFSITE_DIR`), from
-the current release folder, as `flask --app app <command>`.
+On the server, run every `flask --app app <command>` below through
+`sudo helpdesk-admin` (for example
+`sudo helpdesk-admin flask --app app backup-list`). It runs the command as
+the service account with the service's settings
+(`HELPDESK_DATABASE_PATH`, `HELPDESK_BACKUP_DIR`, `HELPDESK_BACKUP_KEY_FILE`,
+`HELPDESK_BACKUP_OFFSITE_DIR`) and its root-only secret files; plain
+`sudo -u helpdesk` cannot read those. See
+[PRODUCTION_OPERATIONS.md §3](PRODUCTION_OPERATIONS.md#3-server-configuration).
 
 ## Every procedure here was rehearsed
 

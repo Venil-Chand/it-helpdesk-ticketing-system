@@ -1,0 +1,96 @@
+#!/bin/bash
+# helpdesk-admin: run one operator command as the helpdesk service account,
+# with the same settings and secrets that systemd gives the services.
+#
+#     sudo helpdesk-admin flask --app app db-status
+#     sudo helpdesk-admin flask --app app ops-check
+#     sudo helpdesk-admin python setup_accounts.py          (interactive)
+#     sudo helpdesk-admin --release /opt/helpdesk/releases/<commit> \
+#         flask --app app init-db --backup-to /var/backups/helpdesk/pre.db
+#
+# Why this exists: the secrets in /etc/helpdesk/credentials/ are readable
+# by root only (mode 0600), and production refuses to start without them,
+# so "sudo -u helpdesk flask ..." cannot work. Copying a secret somewhere
+# the helpdesk account can read would weaken it. Instead, this asks systemd
+# to start a one-off service (systemd-run) as helpdesk with LoadCredential=,
+# exactly like the real units: each secret appears as a private file in
+# $CREDENTIALS_DIRECTORY for the lifetime of that command only, and never
+# in the environment, the shell history or the process list.
+#
+# Install (root-owned, run through sudo by named administrators only):
+#     sudo install -m 0755 -o root -g root \
+#         /opt/helpdesk/current/deploy/scripts/helpdesk-admin \
+#         /usr/local/sbin/helpdesk-admin
+#
+# Exit status: that of the command (for example ops-check: 0, 1 or 2).
+
+set -euo pipefail
+
+RELEASE=/opt/helpdesk/current
+ENV_FILE=${HELPDESK_ENV_FILE:-/etc/helpdesk/helpdesk.env}
+CREDENTIALS=/etc/helpdesk/credentials
+
+usage() {
+    sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//' >&2
+    exit 2
+}
+
+if [[ ${1:-} == "--release" ]]; then
+    [[ $# -ge 2 ]] || usage
+    RELEASE=$2
+    shift 2
+fi
+
+[[ $# -ge 1 ]] || usage
+
+if [[ $EUID -ne 0 ]]; then
+    echo "helpdesk-admin: run it with sudo" >&2
+    exit 2
+fi
+
+if [[ ! -x $RELEASE/.venv/bin/python ]]; then
+    echo "helpdesk-admin: no release with a .venv at $RELEASE" >&2
+    exit 2
+fi
+
+properties=(
+    -p User=helpdesk
+    -p Group=helpdesk
+    -p "WorkingDirectory=$RELEASE"
+    -p "EnvironmentFile=$ENV_FILE"
+    -p UMask=0077
+    -p NoNewPrivileges=yes
+    -p PrivateTmp=yes
+)
+
+# Only the secrets that exist yet (the backup key is created after the
+# first database, and an SMTP password only once SMTP is configured)
+for name in secret-key redis-uri backup-key smtp-password; do
+    if [[ -f $CREDENTIALS/$name ]]; then
+        properties+=(-p "LoadCredential=$name:$CREDENTIALS/$name")
+    fi
+done
+
+# A terminal for interactive commands (password prompts, the live-restore
+# confirmation); plain pipes otherwise, so scripts can use the output
+if [[ -t 0 && -t 1 ]]; then
+    io=--pty
+else
+    io=--pipe
+fi
+
+# The inner shell runs as helpdesk inside the one-off service. It points
+# the *_FILE variables at the credential files systemd provided.
+inner='
+c=${CREDENTIALS_DIRECTORY:-}
+set_file() { if [ -n "$c" ] && [ -f "$c/$2" ]; then export "$1=$c/$2"; fi; }
+set_file SECRET_KEY_FILE secret-key
+set_file RATELIMIT_STORAGE_URI_FILE redis-uri
+set_file HELPDESK_BACKUP_KEY_FILE backup-key
+set_file NOTIFICATION_SMTP_PASSWORD_FILE smtp-password
+export PATH="$PWD/.venv/bin:/usr/bin:/bin"
+exec "$@"
+'
+
+exec systemd-run --quiet --wait --collect --service-type=exec "$io" \
+    "${properties[@]}" /bin/sh -c "$inner" helpdesk-admin "$@"

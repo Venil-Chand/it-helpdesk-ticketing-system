@@ -17,7 +17,7 @@ import time
 
 from .common import (Client, DisposableRedis, Gunicorn, RehearsalUnavailable,
                      Report, Workspace, free_port, gunicorn_available,
-                     new_password, new_secret_key)
+                     new_password, new_secret_key, wait_for)
 
 TICKETS = 10
 
@@ -74,7 +74,10 @@ def _rehearse(ws, report, redis):
 
 def _running_server(ws, report, server, password):
     check = report.check
-    check("two Gunicorn workers are running", len(server.worker_pids()) == 2,
+    # /healthz answers as soon as the first worker is up; the second may
+    # still be booting
+    check("two Gunicorn workers are running",
+          wait_for(lambda: len(server.worker_pids()) == 2, 15),
           str(server.worker_pids()))
 
     client = Client(server.port)
