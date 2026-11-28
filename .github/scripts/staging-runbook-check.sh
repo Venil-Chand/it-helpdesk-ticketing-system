@@ -71,6 +71,15 @@ check() {
 
 https() { curl -sS --cacert "$CA" "$@"; }
 
+# systemd starts OnFailure= units asynchronously: wait for the alert line
+alert_logged() {
+    for i in $(seq 30); do
+        journalctl -t helpdesk-alert -o cat | grep -q "$1 failed" && return 0
+        sleep 1
+    done
+    return 1
+}
+
 # --- CI site values and tools ------------------------------------------
 apt-get install -y -qq expect >/dev/null
 git config --global --add safe.directory "$REPO"
@@ -259,8 +268,7 @@ check "A8 ...and the job said why" \
     bash -c 'journalctl -u helpdesk-backup -o cat | grep -q "on the same filesystem"'
 check "A8 ...and the local backups were still made" \
     test "$(ls -1 /var/backups/helpdesk/helpdesk-*.hdbk | wc -l)" -eq $((local_before + 2))
-check "A10 ...and the alert unit ran for the failed backup" \
-    bash -c 'journalctl -t helpdesk-alert -o cat | grep -q "helpdesk-backup.service failed"'
+check "A10 ...and the alert unit ran for the failed backup" alert_logged helpdesk-backup.service
 rmdir /mnt/helpdesk-offsite/helpdesk
 systemctl reset-failed helpdesk-backup
 mount -o loop,nosuid,nodev,noexec /var/tmp/offsite.img /mnt/helpdesk-offsite
@@ -269,8 +277,7 @@ check "A8 share mounted again: the backup job succeeds" systemctl start helpdesk
 # --- A10 ops-check alert ---------------------------------------------------------
 systemctl stop helpdesk-notifications
 check "A10 worker stopped: ops-check is CRITICAL and fails its unit" bash -c '! systemctl start helpdesk-ops-check'
-check "A10 ...and the alert unit ran" \
-    bash -c 'journalctl -t helpdesk-alert -o cat | grep -q "helpdesk-ops-check.service failed"'
+check "A10 ...and the alert unit ran" alert_logged helpdesk-ops-check.service
 systemctl reset-failed helpdesk-ops-check
 systemctl start helpdesk-notifications
 
