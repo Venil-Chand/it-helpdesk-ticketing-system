@@ -50,17 +50,33 @@ jobs:
           python-version: '3.13'
           cache: 'pip'
 
-      # Step 3: Install dependencies
+      # Step 3: Install the exact, hash-checked dependency set that
+      # staging and production install (requirements.lock)
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+          python -m pip install --require-hashes -r requirements.lock
+
+      # The lock must still satisfy requirements.txt (for example after a
+      # Dependabot update); otherwise regenerate it as described in
+      # docs/STAGING_RUNBOOK.md ("Dependency lock")
+      - name: Check requirements.lock against requirements.txt
+        run: |
+          python -m pip check
+          python -m pip install --dry-run --quiet --report lock-report.json -r requirements.txt
+          python - <<'PY'
+          import json, sys
+          missing = [item["metadata"]["name"] for item in json.load(open("lock-report.json"))["install"]]
+          if missing:
+              sys.exit(f"requirements.lock does not satisfy requirements.txt: {missing}; regenerate it")
+          print("requirements.lock satisfies requirements.txt")
+          PY
 
       # Step 4: Check dependencies for known security vulnerabilities
       - name: Audit Python dependencies
         run: |
           python -m pip install pip-audit
-          python -m pip_audit --strict -r requirements.txt
+          python -m pip_audit --strict --disable-pip -r requirements.lock
 
       # Step 5: Check Python syntax
       - name: Check Python syntax
@@ -100,7 +116,8 @@ jobs:
       - name: Install dependencies and headless Chromium
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt -r e2e/requirements.txt
+          python -m pip install --require-hashes -r requirements.lock
+          python -m pip install -r e2e/requirements.txt
           python -m playwright install --with-deps --only-shell chromium
 
       # Each test class builds its own temporary database, first
@@ -182,7 +199,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+          python -m pip install --require-hashes -r requirements.lock
 
       # Real Caddy in front of real Gunicorn workers: TLS, cookies, HSTS,
       # forged forwarded headers, body limit, /readyz restriction, log

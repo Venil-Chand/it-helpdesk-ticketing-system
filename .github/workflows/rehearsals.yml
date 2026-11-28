@@ -50,7 +50,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+          python -m pip install --require-hashes -r requirements.lock
 
       # Only the mutation rehearsal runs browser tests
       - name: Install Playwright and headless Chromium
