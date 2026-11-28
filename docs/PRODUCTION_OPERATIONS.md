@@ -191,7 +191,10 @@ points `SECRET_KEY_FILE` at it (`%d` is that directory). The secret is
 then not in the process environment, where `systemctl show`, child
 processes or crash reports could expose it. In production a secret file
 readable by other accounts is refused, as is setting both `NAME` and
-`NAME_FILE`. Errors name the variable, never the value or the path.
+`NAME_FILE`. A systemd credential counts as private: systemd gives it to
+the service as a root-owned 0400 file with an ACL entry for the service
+account only (which `ls -l` shows as 0440), and the check reads that
+ACL. Errors name the variable, never the value or the path.
 
 Create the credentials (as root):
 

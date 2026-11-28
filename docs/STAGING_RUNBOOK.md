@@ -29,6 +29,20 @@ pre-installs tools) and is not reachable from the internet, so the
 workflow proves the procedure works together, not that your server is
 ready; that is what the acceptance checklist is for.
 
+**Two defects found by running it** (fixed in the same change; both
+affect `v1.0.0-rc1` as tagged):
+
+* `deploy/redis/users.acl` began with comment lines, and **Redis refuses
+  an ACL file containing anything but `user` lines**, so Redis would not
+  start. The explanation now sits next to `aclfile` in
+  `redis-helpdesk.conf`.
+* systemd hands credentials to a service running as another account as
+  root-owned 0400 files **with an ACL entry** for that account, which the
+  application's "not readable by other accounts" check took for a
+  group-readable file (0440). **Every helpdesk unit refused to start.**
+  The check now reads the ACL and still refuses any access by another
+  account (`secret_files.only_this_account_can_read`, with tests).
+
 **Nothing in this runbook has been run on a real server yet.**
 
 ---
@@ -52,9 +66,10 @@ You need (decided and available):
   external uptime monitor;
 * a password manager (or safe) for the backup key and the first
   administrator's password, and the named person who holds them;
-* a reviewed release tag that contains `requirements.lock` and
-  `deploy/scripts/helpdesk-admin` (**`v1.0.0-rc1` does not**; a later tag
-  is needed, see the release notes of that tag).
+* a reviewed release tag that contains `requirements.lock`,
+  `deploy/scripts/helpdesk-admin` and the two fixes above. **`v1.0.0-rc1`
+  cannot be deployed this way**: its units do not start under systemd. A
+  later tag is needed.
 
 No real email is sent: notifications stay `local` (written to a folder)
 in staging. No existing database is copied: the staging database is

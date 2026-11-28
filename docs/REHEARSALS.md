@@ -248,11 +248,13 @@ notice", not "no test would".
 * **Caddy and TLS** are not rehearsed here. The `caddy` job in normal CI
   already validates every Caddyfile with the real Caddy and runs 14
   proxy-boundary checks (`.github/scripts/caddy-proxy-check.sh`).
-* **systemd units and timers, the Redis ACL file (`deploy/redis/`), the
-  firewall, real certificates and file ownership on a server** need a
-  real server and root access. They cannot be rehearsed safely on a
-  development machine or a CI runner. They remain pilot conditions P1–P8
-  in the readiness report.
+* **systemd units and timers, Redis with its ACL file, Caddy and file
+  ownership** are not rehearsed here. They are installed and run, as
+  root, by the separate `Staging runbook` workflow on a disposable
+  GitHub-hosted Ubuntu 24.04 VM ([STAGING_RUNBOOK.md](STAGING_RUNBOOK.md)).
+  **The firewall, real certificates, DNS, off-server storage and alerting**
+  still need a real server; they remain pilot conditions P1–P8 in the
+  readiness report.
 * **Load and response times** (readiness report §6.3) are not committed as
   a rehearsal. The figures depend on the machine and are indicative only,
   so a script with pass/fail thresholds would either be fragile or prove
