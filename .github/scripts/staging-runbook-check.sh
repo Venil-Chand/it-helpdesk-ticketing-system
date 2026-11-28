@@ -34,6 +34,20 @@ WORK=$(mktemp -d)
 chmod 0700 "$WORK"
 
 steps() { python3 "$REPO/.github/scripts/runbook_steps.py" "$RUNBOOK" "$@"; }
+
+# On any unexpected failure: what systemd and the journal say (the
+# runner holds only this run's throwaway secrets, and none are logged)
+diagnose() {
+    echo "::group::diagnostics"
+    systemctl --no-pager --failed || true
+    for unit in redis-server caddy helpdesk-web helpdesk-notifications \
+                helpdesk-backup helpdesk-backup-drill helpdesk-ops-check; do
+        echo "--- $unit"
+        journalctl -u "$unit" -n 30 --no-pager -o short-iso || true
+    done
+    echo "::endgroup::"
+}
+trap 'diagnose' ERR
 ran=()
 run_step() {
     echo "::group::runbook step: $1"

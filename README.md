@@ -300,7 +300,7 @@ Give the temporary password to its owner through a trusted channel, then make su
 **Access controls this command relies on.** The command has no password check of its own: being able to run it on the server *is* the authorisation. Protect that access:
 
 - **Ownership:** run the application as a dedicated, non-login service account (for example `helpdesk`) that owns `helpdesk.db`. The database file is `0600` and its directory `0700`, so no other account can read or write it.
-- **Who can run it:** only named administrators, through `sudo -u helpdesk flask --app app reset-password …`. Use personal SSH accounts with key-only authentication; no shared logins and no direct root login.
+- **Who can run it:** only named administrators, through `sudo helpdesk-admin flask --app app reset-password …` (see [docs/PRODUCTION_OPERATIONS.md §3](docs/PRODUCTION_OPERATIONS.md#3-server-configuration)). Use personal SSH accounts with key-only authentication; no shared logins and no direct root login.
 - **The record:** the audit event records the real user id the command ran as and, under sudo, the invoking account. The system's sudo/auth log (`/var/log/auth.log` or `journalctl`) is the authoritative record of who ran the command; keep it, and review it alongside the audit log.
 - **Backups:** anyone who can read a database backup can attack the password hashes offline, so restrict and encrypt backups the same way.
 
@@ -453,8 +453,8 @@ Deployment sequence (the full procedure, including releases and rollback, is in 
 
 ```bash
 sudo systemctl stop helpdesk-web helpdesk-notifications
-flask --app app init-db --backup-to /var/backups/helpdesk/pre-upgrade-$(date -u +%Y%m%dT%H%M%SZ).db
-flask --app app db-status          # must exit 0
+sudo helpdesk-admin flask --app app init-db --backup-to /var/backups/helpdesk/pre-upgrade-$(date -u +%Y%m%dT%H%M%SZ).db
+sudo helpdesk-admin flask --app app db-status          # must exit 0
 sudo systemctl start helpdesk-web helpdesk-notifications
 ```
 
